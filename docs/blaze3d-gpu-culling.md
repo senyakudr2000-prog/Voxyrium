@@ -93,6 +93,20 @@ section header. Existing geometry/staging/cache budgets are preserved.
 
 ## GPU diagnostics and validation
 
+The first in-game run of this pass exposed an attachment-format regression: Minecraft 26.2
+validates the pipeline colour format even when colour writes are disabled. A null format
+is not a wildcard. The depth prefill incorrectly declared null, and the HiZ passes retained
+the default RGBA8 format rather than their R32_FLOAT, R8_UNORM and RGBA32_UINT targets.
+All five auxiliary pipelines now declare the actual attachment format explicitly in
+`Blaze3dAuxiliaryPipelines`, retaining the depth prefill's disabled colour writes.
+
+`verifyBlaze3dPipelineTargets`, included in the full build, exercises those actual production
+pipelines through Minecraft's real `RenderPass.setPipeline` validation with Java-only textures
+and mock backends. Negative controls reproduce the logged null-format exception and reject
+integer commands against a normalized colour target. The five corrected pipelines pass
+without opening a graphics device. This covers an API contract shader compilation cannot
+check; live driver pipeline creation and visual validation still require the game.
+
 The live benchmark still writes `<game directory>/logs/voxy-benchmarks/latest.txt` and a
 session archive. It now adds `GPU` records, sampling every 30 rendered frames with an
 eight-slot timestamp-query ring. Results are polled nonblockingly and a slot is reused

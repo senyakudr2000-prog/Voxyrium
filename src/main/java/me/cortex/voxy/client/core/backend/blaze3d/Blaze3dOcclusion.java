@@ -1,21 +1,15 @@
 package me.cortex.voxy.client.core.backend.blaze3d;
 
 import com.mojang.blaze3d.GpuFormat;
-import com.mojang.blaze3d.PrimitiveTopology;
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
-import com.mojang.blaze3d.pipeline.BindGroupLayout;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
-import com.mojang.blaze3d.shaders.UniformType;
 import com.mojang.blaze3d.systems.CommandEncoder;
 import com.mojang.blaze3d.systems.RenderPass;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.textures.FilterMode;
 import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.textures.GpuTextureView;
-import com.mojang.blaze3d.vertex.DefaultVertexFormat;
-import net.minecraft.client.renderer.BindGroupLayouts;
-import net.minecraft.resources.Identifier;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
 import org.joml.Vector3f;
@@ -27,22 +21,10 @@ import java.util.Optional;
 
 /** GPU-only conservative section visibility, derived from occluders rendered in the current frame. */
 final class Blaze3dOcclusion implements AutoCloseable {
-    static final BindGroupLayout TABLE_LAYOUT = BindGroupLayout.builder()
-            .withUniform("VoxyOcclusionOrigins", UniformType.TEXEL_BUFFER, GpuFormat.RGBA32_FLOAT)
-            .withUniform("VoxyOcclusionBounds", UniformType.TEXEL_BUFFER, GpuFormat.R32_UINT).build();
-    private static final RenderPipeline COPY = pipeline("blaze3d_hiz_copy", false);
-    private static final RenderPipeline REDUCE = pipeline("blaze3d_hiz_reduce", false);
-    private static final RenderPipeline VISIBILITY = pipeline("blaze3d_hiz_visibility", true);
-    private static final RenderPipeline COMMANDS = RenderPipeline.builder()
-            .withLocation(Identifier.fromNamespaceAndPath("voxy", "blaze3d_hiz_commands"))
-            .withBindGroupLayout(BindGroupLayouts.MATRICES_PROJECTION)
-            .withBindGroupLayout(BindGroupLayouts.SAMPLER0)
-            .withBindGroupLayout(BindGroupLayout.builder()
-                    .withUniform("VoxyOcclusionCounts", UniformType.TEXEL_BUFFER, GpuFormat.RG32_UINT).build())
-            .withVertexShader(Identifier.fromNamespaceAndPath("voxy", "core/blaze3d_lod_composite"))
-            .withFragmentShader(Identifier.fromNamespaceAndPath("voxy", "core/blaze3d_hiz_commands"))
-            .withVertexBinding(0, DefaultVertexFormat.POSITION)
-            .withPrimitiveTopology(PrimitiveTopology.TRIANGLE_STRIP).withCull(false).build();
+    private static final RenderPipeline COPY = Blaze3dAuxiliaryPipelines.HIZ_COPY;
+    private static final RenderPipeline REDUCE = Blaze3dAuxiliaryPipelines.HIZ_REDUCE;
+    private static final RenderPipeline VISIBILITY = Blaze3dAuxiliaryPipelines.HIZ_VISIBILITY;
+    private static final RenderPipeline COMMANDS = Blaze3dAuxiliaryPipelines.HIZ_COMMANDS;
     private GpuTexture hierarchy, visibility;
     private GpuTextureView hierarchyView, visibilityView;
     private GpuTextureView[] levels;
@@ -52,18 +34,6 @@ final class Blaze3dOcclusion implements AutoCloseable {
     private ByteBuffer originData, boundData, countData;
     private boolean active;
     private int entries;
-
-    private static RenderPipeline pipeline(String shader, boolean tables) {
-        var builder = RenderPipeline.builder().withLocation(Identifier.fromNamespaceAndPath("voxy", shader))
-                .withBindGroupLayout(BindGroupLayouts.MATRICES_PROJECTION)
-                .withBindGroupLayout(BindGroupLayouts.SAMPLER0)
-                .withVertexShader(Identifier.fromNamespaceAndPath("voxy", "core/blaze3d_lod_composite"))
-                .withFragmentShader(Identifier.fromNamespaceAndPath("voxy", "core/" + shader))
-                .withVertexBinding(0, DefaultVertexFormat.POSITION)
-                .withPrimitiveTopology(PrimitiveTopology.TRIANGLE_STRIP).withCull(false);
-        if (tables) builder.withBindGroupLayout(TABLE_LAYOUT);
-        return builder.build();
-    }
 
     void prepare(int width, int height, boolean enabled) {
         ensureResources(width, height);

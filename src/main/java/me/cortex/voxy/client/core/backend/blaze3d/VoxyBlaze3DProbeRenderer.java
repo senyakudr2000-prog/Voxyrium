@@ -196,17 +196,7 @@ public final class VoxyBlaze3DProbeRenderer {
     private static final RenderPipeline LOD_TRANSLUCENT_COMPOSITE_PIPELINE = createCompositePipeline(
             "blaze3d_lod_translucent_composite", false, true);
     private static final RenderPipeline GLOBAL_FOG_PIPELINE = createGlobalFogPipeline();
-    private static final RenderPipeline LOD_DEPTH_SEED_PIPELINE = RenderPipeline.builder()
-            .withLocation(Identifier.fromNamespaceAndPath("voxy", "blaze3d_lod_depth_seed"))
-            .withBindGroupLayout(BindGroupLayouts.MATRICES_PROJECTION)
-            .withBindGroupLayout(BindGroupLayouts.SAMPLER0)
-            .withVertexShader(Identifier.fromNamespaceAndPath("voxy", "core/blaze3d_lod_composite"))
-            .withFragmentShader(Identifier.fromNamespaceAndPath("voxy", "core/blaze3d_lod_depth_seed"))
-            .withVertexBinding(0, DefaultVertexFormat.POSITION)
-            .withPrimitiveTopology(PrimitiveTopology.TRIANGLE_STRIP)
-            .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, true))
-            .withColorTargetState(new ColorTargetState(Optional.empty(), null, ColorTargetState.WRITE_NONE))
-            .withCull(false).build();
+    private static final RenderPipeline LOD_DEPTH_SEED_PIPELINE = Blaze3dAuxiliaryPipelines.SODIUM_DEPTH;
 
     private static RenderPipeline createTexturedMarkerPipeline() {
         return RenderPipeline.builder()
