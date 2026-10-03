@@ -57,6 +57,11 @@ public class RenderGenerationService {
     private final WorldEngine world;
     private final ModelBakerySubsystem modelBakery;
     private Consumer<BuiltSection> resultConsumer;
+    /** Optional per-instance diagnostic hook. Native renderers leave this unset. */
+    public interface BuildObserver {
+        void onAttempt(long key, long started, long acquireNanos, long generateNanos, boolean modelRetry);
+    }
+    private volatile BuildObserver buildObserver;
     private final boolean emitMeshlets;
 
     private final Service service;
@@ -84,6 +89,26 @@ public class RenderGenerationService {
 
     public void setResultConsumer(Consumer<BuiltSection> consumer) {
         this.resultConsumer = consumer;
+    }
+
+    public void setBuildObserver(BuildObserver observer) {
+        this.buildObserver = observer;
+    }
+
+    private BuiltSection generateObserved(RenderDataFactory factory, WorldSection section,
+                                          BuildObserver observer, long attemptStart) {
+        if (observer == null) return factory.generateMesh(section);
+        long generateStart = System.nanoTime();
+        boolean modelRetry = false;
+        try {
+            return factory.generateMesh(section);
+        } catch (IdNotYetComputedException exception) {
+            modelRetry = true;
+            throw exception;
+        } finally {
+            observer.onAttempt(section.key, attemptStart, generateStart - attemptStart,
+                    System.nanoTime() - generateStart, modelRetry);
+        }
     }
 
     //NOTE: the biomes are always fully populated/kept up to date
@@ -130,6 +155,8 @@ public class RenderGenerationService {
     private void processJob(RenderDataFactory factory, IntOpenHashSet seenMissedIds) {
         BuildTask task = this.taskQueue.poll();
         this.taskQueueCount.decrementAndGet();
+        BuildObserver observer = this.buildObserver;
+        long attemptStart = observer == null ? 0L : System.nanoTime();
 
         //long time = BuiltSection.getTime();
         boolean shouldFreeSection = true;
@@ -153,6 +180,8 @@ public class RenderGenerationService {
         }
 
         if (section == null) {
+            if (observer != null) observer.onAttempt(task.position, attemptStart,
+                    System.nanoTime() - attemptStart, 0L, false);
             if (this.resultConsumer != null) {
                 this.resultConsumer.accept(BuiltSection.empty(task.position));
             }
@@ -163,7 +192,7 @@ public class RenderGenerationService {
 
 
         try {
-            mesh = factory.generateMesh(section);
+            mesh = this.generateObserved(factory, section, observer, attemptStart);
         } catch (IdNotYetComputedException e) {
             {
                 long stamp = this.taskMapLock.writeLock();

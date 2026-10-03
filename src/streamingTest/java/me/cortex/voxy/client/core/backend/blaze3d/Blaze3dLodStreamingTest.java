@@ -10,7 +10,7 @@ public final class Blaze3dLodStreamingTest {
     private static final LongUnaryOperator PARENT = key -> key < 8 ? key : key / 8;
     private static int checks;
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
         coarseningKeepsCoverageUntilUpload();
         consecutiveSelectionsKeepCoverage();
         cachedAndEmptyReplacements();
@@ -20,6 +20,7 @@ public final class Blaze3dLodStreamingTest {
         intermediateFallbacks();
         System.out.println("Blaze3D streaming: " + checks + " checks passed.");
         Blaze3dQuadEncoderTest.run();
+        Blaze3dBenchmarkTest.run();
     }
 
     private static void intermediateFallbacks() {

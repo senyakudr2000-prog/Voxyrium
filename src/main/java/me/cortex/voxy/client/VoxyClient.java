@@ -5,6 +5,7 @@ import me.cortex.voxy.client.compat.IrisBackendCompat;
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.IVoxyRenderSystemHolder;
 import me.cortex.voxy.client.core.backend.VoxyGraphicsBackend;
+import me.cortex.voxy.client.core.backend.blaze3d.VoxyBlaze3DProbeRenderer;
 import me.cortex.voxy.client.core.gl.Capabilities;
 import me.cortex.voxy.client.core.rendering.util.SharedIndexBuffer;
 import me.cortex.voxy.client.core.util.IrisUtil;
@@ -280,6 +281,7 @@ public class VoxyClient implements ClientModInitializer {
                 pendingRendererNotice = null;
                 Logger.showInHUD(notice);
             }
+            VoxyBlaze3DProbeRenderer.updateBenchmarkSession();
         });
 
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {

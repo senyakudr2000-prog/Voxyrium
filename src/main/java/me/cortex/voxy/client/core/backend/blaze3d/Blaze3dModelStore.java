@@ -184,6 +184,12 @@ final class Blaze3dModelStore implements IModelStore {
         return this.uploadedTextureVersion >= version;
     }
 
+    String benchmarkSummary() {
+        return "stagedTextureVersion=" + this.stagedTextureVersion.get()
+                + " uploadedTextureVersion=" + this.uploadedTextureVersion
+                + " pendingTextures=" + this.pendingTextures.size();
+    }
+
     GpuSampler atlasSampler() {
         return RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST, true);
     }
