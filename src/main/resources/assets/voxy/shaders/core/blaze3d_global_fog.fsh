@@ -1,4 +1,5 @@
 #version 330
+#moj_import <voxy:blaze3d_fragment_discard.glsl>
 
 layout(std140) uniform DynamicTransforms {
     // Reconstructs camera-relative world position from Voxy's extended depth.
@@ -65,9 +66,10 @@ float linearFogValue(float fogDistance, float start, float end) {
 }
 
 void main() {
+    VOXY_INIT_FRAGMENT();
     float targetDepth = texture(Sampler0, texCoord).r;
     if (targetDepth <= 0.0 || FogColor.a <= 0.0) {
-        discard;
+        VOXY_DISCARD_FRAGMENT();
     }
 
     float lodDepth = texture(Sampler1, texCoord).r;
@@ -94,7 +96,7 @@ void main() {
     float desiredOpacity = max(environmentalFog, renderFog) * FogColor.a;
     float remainingOpacity = 1.0 - existingOpacity;
     if (desiredOpacity <= existingOpacity || remainingOpacity <= 0.000001) {
-        discard;
+        VOXY_DISCARD_FRAGMENT();
     }
 
     float overlayOpacity = (desiredOpacity - existingOpacity) / remainingOpacity;

@@ -486,6 +486,7 @@ sourceSets {
             include '**/Blaze3dLodStreaming.java', '**/Blaze3dLodStreamingTest.java',
                     '**/Blaze3dQuadEncoder.java', '**/Blaze3dQuadEncoderTest.java',
                     '**/Blaze3dModelEncoder.java', '**/Blaze3dModelEncoderTest.java',
+                    '**/Blaze3dDiscardPolicy.java', '**/Blaze3dDiscardPolicyTest.java',
                     '**/Blaze3dBenchmark.java', '**/Blaze3dBenchmarkTest.java',
                     '**/Blaze3dFingerprintCache.java', '**/Blaze3dFingerprintCacheTest.java',
                     '**/Blaze3dSodiumCoverage.java', '**/Blaze3dSodiumVisibility.java',

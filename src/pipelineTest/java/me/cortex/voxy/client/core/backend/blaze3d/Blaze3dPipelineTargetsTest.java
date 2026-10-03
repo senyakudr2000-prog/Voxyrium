@@ -23,6 +23,15 @@ public final class Blaze3dPipelineTargetsTest {
     private static int accepted;
     public static void main(String[] args) {
         verify(Blaze3dAuxiliaryPipelines.SODIUM_DEPTH, GpuFormat.RGBA8_UNORM);
+        var variants = Blaze3dAuxiliaryPipelines.SODIUM_DEPTH_VARIANTS;
+        verify(variants.sampleMask(), GpuFormat.RGBA8_UNORM);
+        if (variants.normal().getShaderDefines().flags().contains("VOXY_SAMPLE_MASK_DISCARD")
+                || !variants.sampleMask().getShaderDefines().flags().contains("VOXY_SAMPLE_MASK_DISCARD")
+                || variants.normal().getLocation().equals(variants.sampleMask().getLocation())
+                || !variants.normal().getDepthStencilState().equals(variants.sampleMask().getDepthStencilState())
+                || !variants.normal().getColorTargetState().equals(variants.sampleMask().getColorTargetState())) {
+            throw new AssertionError("Discard variants must have independent shader defines/IDs and identical attachment state");
+        }
         verify(Blaze3dAuxiliaryPipelines.HIZ_COPY, GpuFormat.R32_FLOAT);
         verify(Blaze3dAuxiliaryPipelines.HIZ_REDUCE, GpuFormat.R32_FLOAT);
         verify(Blaze3dAuxiliaryPipelines.HIZ_VISIBILITY, GpuFormat.R8_UNORM);
@@ -57,8 +66,8 @@ public final class Blaze3dPipelineTargetsTest {
         } catch (IllegalStateException expected) {
             if (!expected.getMessage().contains("format doesn't match")) throw expected;
         }
-        if (accepted != 5) throw new AssertionError("Invalid pipelines must fail before backend submission");
-        System.out.println("Blaze3D pipeline targets: five actual pipelines accepted; logged failure and wrong integer target rejected without a GPU.");
+        if (accepted != 6) throw new AssertionError("Invalid pipelines must fail before backend submission");
+        System.out.println("Blaze3D pipeline targets: six actual variants accepted; independent discard shaders, logged failure and wrong integer target checked without a GPU.");
     }
 
     private static void verify(RenderPipeline pipeline, GpuFormat format) {

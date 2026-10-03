@@ -1,4 +1,5 @@
 #version 330
+#moj_import <voxy:blaze3d_fragment_discard.glsl>
 layout(std140) uniform DynamicTransforms {
     mat4 ModelViewMat;
     vec4 ColorModulator;
@@ -9,8 +10,9 @@ uniform sampler2D Sampler0;
 in vec2 texCoord;
 out vec4 fragColor;
 void main() {
+    VOXY_INIT_FRAGMENT();
     float depth = texture(Sampler0, texCoord).r;
-    if (depth <= 0.0) discard;
+    if (depth <= 0.0) VOXY_DISCARD_FRAGMENT();
     float ndcDepth = ModelOffset.x > 0.5 ? depth : depth * 2.0 - 1.0;
     vec4 view = ModelViewMat * vec4(texCoord * 2.0 - 1.0, ndcDepth, 1.0);
     vec4 clip = TextureMat * view;

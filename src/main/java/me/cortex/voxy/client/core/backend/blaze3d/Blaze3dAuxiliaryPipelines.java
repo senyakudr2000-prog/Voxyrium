@@ -15,8 +15,10 @@ import java.util.Optional;
 
 /** Explicit attachment formats are required even when a pipeline disables colour writes. */
 final class Blaze3dAuxiliaryPipelines {
-    static final RenderPipeline SODIUM_DEPTH = fullscreen("blaze3d_lod_depth_seed", GpuFormat.RGBA8_UNORM,
-            ColorTargetState.WRITE_NONE).withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, true)).build();
+    static final Blaze3dDiscardPipelines SODIUM_DEPTH_VARIANTS = Blaze3dDiscardPipelines.build(
+            fullscreen("blaze3d_lod_depth_seed", GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_NONE)
+                    .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, true)));
+    static final RenderPipeline SODIUM_DEPTH = SODIUM_DEPTH_VARIANTS.normal();
     static final RenderPipeline HIZ_COPY = fullscreen("blaze3d_hiz_copy", GpuFormat.R32_FLOAT,
             ColorTargetState.WRITE_RED).build();
     static final RenderPipeline HIZ_REDUCE = fullscreen("blaze3d_hiz_reduce", GpuFormat.R32_FLOAT,

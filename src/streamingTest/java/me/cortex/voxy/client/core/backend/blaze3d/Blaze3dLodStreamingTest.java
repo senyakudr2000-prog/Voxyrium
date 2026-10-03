@@ -21,6 +21,7 @@ public final class Blaze3dLodStreamingTest {
         System.out.println("Blaze3D streaming: " + checks + " checks passed.");
         Blaze3dQuadEncoderTest.run();
         Blaze3dModelEncoderTest.run();
+        Blaze3dDiscardPolicyTest.run();
         Blaze3dBenchmarkTest.run();
         Blaze3dFingerprintCacheTest.run();
         Blaze3dVisibilityTest.run();

@@ -115,7 +115,8 @@ void main() {
     gl_Position = ProjMat * viewPosition;
     texCoord0 = textureMin + textureSpan * Corner;
     quadFlags = int((QuadData.y >> 23u) & 255u) | (face << 8)
-            | (int((FaceData >> 24u) & 3u) << 11);
+            | (int((FaceData >> 24u) & 3u) << 11)
+            | (int(size.x - 1.0) << 15) | (int(size.y - 1.0) << 19);
     if (((FaceData >> 22u) & 1u) != 0u
             || (((FaceData >> 23u) & 1u) != 0u && (size.x > 1.0 || size.y > 1.0))) {
         quadFlags |= 1 << 13;

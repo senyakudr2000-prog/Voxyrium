@@ -183,20 +183,20 @@ public final class VoxyBlaze3DProbeRenderer {
     };
     private static final RenderPipeline MARKER_PIPELINE = createTexturedMarkerPipeline();
     // Minecraft 26.2 uses reverse-Z depth: larger values are closer to the camera.
-    private static final RenderPipeline LOD_PIPELINE = createTexturedTerrainPipeline(
+    private static final Blaze3dDiscardPipelines LOD_PIPELINE = createTexturedTerrainPipeline(
             "blaze3d_lod_probe_terrain", CompareOp.GREATER_THAN, true, false);
-    private static final RenderPipeline LOD_WATER_PIPELINE = createTexturedTerrainPipeline(
+    private static final Blaze3dDiscardPipelines LOD_WATER_PIPELINE = createTexturedTerrainPipeline(
             "blaze3d_lod_probe_water", CompareOp.GREATER_THAN, true, false);
-    private static final RenderPipeline LOD_OVERLAY_PIPELINE = createTexturedTerrainPipeline(
+    private static final Blaze3dDiscardPipelines LOD_OVERLAY_PIPELINE = createTexturedTerrainPipeline(
             "blaze3d_lod_probe_terrain_overlay", CompareOp.ALWAYS_PASS, false, false);
-    private static final RenderPipeline LOD_WATER_OVERLAY_PIPELINE = createTexturedTerrainPipeline(
+    private static final Blaze3dDiscardPipelines LOD_WATER_OVERLAY_PIPELINE = createTexturedTerrainPipeline(
             "blaze3d_lod_probe_water_overlay", CompareOp.ALWAYS_PASS, false, true);
-    private static final RenderPipeline LOD_COMPOSITE_PIPELINE = createCompositePipeline(
+    private static final Blaze3dDiscardPipelines LOD_COMPOSITE_PIPELINE = createCompositePipeline(
             "blaze3d_lod_composite", true, false);
-    private static final RenderPipeline LOD_TRANSLUCENT_COMPOSITE_PIPELINE = createCompositePipeline(
+    private static final Blaze3dDiscardPipelines LOD_TRANSLUCENT_COMPOSITE_PIPELINE = createCompositePipeline(
             "blaze3d_lod_translucent_composite", false, true);
-    private static final RenderPipeline GLOBAL_FOG_PIPELINE = createGlobalFogPipeline();
-    private static final RenderPipeline LOD_DEPTH_SEED_PIPELINE = Blaze3dAuxiliaryPipelines.SODIUM_DEPTH;
+    private static final Blaze3dDiscardPipelines GLOBAL_FOG_PIPELINE = createGlobalFogPipeline();
+    private static final Blaze3dDiscardPipelines LOD_DEPTH_SEED_PIPELINE = Blaze3dAuxiliaryPipelines.SODIUM_DEPTH_VARIANTS;
 
     private static RenderPipeline createTexturedMarkerPipeline() {
         return RenderPipeline.builder()
@@ -212,7 +212,7 @@ public final class VoxyBlaze3DProbeRenderer {
                 .build();
     }
 
-    private static RenderPipeline createTexturedTerrainPipeline(String name, CompareOp depthTest, boolean writeDepth, boolean translucent) {
+    private static Blaze3dDiscardPipelines createTexturedTerrainPipeline(String name, CompareOp depthTest, boolean writeDepth, boolean translucent) {
         RenderPipeline.Builder builder = RenderPipeline.builder()
             .withLocation(Identifier.fromNamespaceAndPath("voxy", name))
             .withBindGroupLayout(BindGroupLayouts.MATRICES_PROJECTION)
@@ -229,10 +229,10 @@ public final class VoxyBlaze3DProbeRenderer {
         if (translucent) {
             builder.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT));
         }
-        return builder.build();
+        return Blaze3dDiscardPipelines.build(builder);
     }
 
-    private static RenderPipeline createCompositePipeline(String name, boolean writeDepth, boolean translucent) {
+    private static Blaze3dDiscardPipelines createCompositePipeline(String name, boolean writeDepth, boolean translucent) {
         RenderPipeline.Builder builder = RenderPipeline.builder()
                 .withLocation(Identifier.fromNamespaceAndPath("voxy", name))
                 .withBindGroupLayout(BindGroupLayouts.MATRICES_PROJECTION)
@@ -246,11 +246,11 @@ public final class VoxyBlaze3DProbeRenderer {
         if (translucent) {
             builder.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT));
         }
-        return builder.build();
+        return Blaze3dDiscardPipelines.build(builder);
     }
 
-    private static RenderPipeline createGlobalFogPipeline() {
-        return RenderPipeline.builder()
+    private static Blaze3dDiscardPipelines createGlobalFogPipeline() {
+        return Blaze3dDiscardPipelines.build(RenderPipeline.builder()
                 .withLocation(Identifier.fromNamespaceAndPath("voxy", "blaze3d_global_fog"))
                 .withBindGroupLayout(BindGroupLayouts.MATRICES_PROJECTION)
                 .withBindGroupLayout(BindGroupLayouts.FOG)
@@ -260,8 +260,7 @@ public final class VoxyBlaze3DProbeRenderer {
                 .withVertexBinding(0, DefaultVertexFormat.POSITION)
                 .withPrimitiveTopology(PrimitiveTopology.TRIANGLE_STRIP)
                 .withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
-                .withCull(false)
-                .build();
+                .withCull(false));
     }
 
     private static GpuBuffer markerVertexBuffer;
@@ -498,7 +497,8 @@ public final class VoxyBlaze3DProbeRenderer {
         benchmarkEvent("DEVICE", "backend=" + deviceInfo.backendName() + " device=" + deviceInfo.name()
                 + " vendor=" + deviceInfo.vendorName() + " drawIndirect=" + deviceInfo.features().drawIndirect()
                 + " multiDrawIndirect=" + deviceInfo.features().multiDrawIndirect()
-                + " persistentMapping=" + deviceInfo.features().persistentMapping());
+                + " persistentMapping=" + deviceInfo.features().persistentMapping()
+                + " sampleMaskDiscard=" + Blaze3dDiscardPipelines.needsSampleMask());
     }
 
     private static void benchmarkFinished(long key, String outcome, long bytes) {
@@ -977,7 +977,7 @@ public final class VoxyBlaze3DProbeRenderer {
                         minecraftViewProjection));
                 pass.setUniform("Projection", globalFogProjectionBuffer.slice());
                 pass.setUniform("Fog", RenderSystem.getShaderFog());
-                pass.setPipeline(GLOBAL_FOG_PIPELINE);
+                pass.setPipeline(GLOBAL_FOG_PIPELINE.get());
                 pass.bindTexture("Sampler0", depthTarget,
                         RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST));
                 pass.bindTexture("Sampler1", lodOpaqueDepthTextureView,
@@ -1030,7 +1030,7 @@ public final class VoxyBlaze3DProbeRenderer {
                     new Vector4f(viewRotation.m10(), viewRotation.m11(), viewRotation.m12(), 1.0f),
                     new Vector3f(zeroToOne ? 1.0f : 0.0f, transitionStart, transitionEnd),
                     new Matrix4f(matrices.projection())));
-            pass.setPipeline(translucent ? LOD_TRANSLUCENT_COMPOSITE_PIPELINE : LOD_COMPOSITE_PIPELINE);
+            pass.setPipeline((translucent ? LOD_TRANSLUCENT_COMPOSITE_PIPELINE : LOD_COMPOSITE_PIPELINE).get());
             pass.bindTexture("Sampler0", lodColorTextureView,
                     RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR));
             pass.bindTexture("Sampler1", lodDepthTextureView,
@@ -1047,7 +1047,7 @@ public final class VoxyBlaze3DProbeRenderer {
         try (RenderPass pass = encoder.createRenderPass(() -> "Voxy Sodium depth prefill", lodColorTextureView,
                 Optional.empty(), lodDepthTextureView, OptionalDouble.empty())) {
             RenderSystem.bindDefaultUniforms(pass);
-            pass.setPipeline(LOD_DEPTH_SEED_PIPELINE);
+            pass.setPipeline(LOD_DEPTH_SEED_PIPELINE.get());
             pass.setUniform("DynamicTransforms", RenderSystem.getDynamicUniforms().writeTransform(
                     new Matrix4f(matrices.projection()).invert(), new Vector4f(1),
                     new Vector3f(RenderSystem.getDevice().getDeviceInfo().isZZeroToOne() ? 1 : 0, 0, 0),
@@ -1336,7 +1336,7 @@ public final class VoxyBlaze3DProbeRenderer {
         if (blazeModelStore == null) {
             return;
         }
-        pass.setPipeline(renderLodAboveTerrain ? LOD_OVERLAY_PIPELINE : LOD_PIPELINE);
+        pass.setPipeline((renderLodAboveTerrain ? LOD_OVERLAY_PIPELINE : LOD_PIPELINE).get());
         bindLodTables(pass);
         pass.setUniform("Fog", RenderSystem.getShaderFog());
         pass.bindTexture("Sampler0", blazeModelStore.atlasView(), blazeModelStore.atlasSampler());
@@ -1383,7 +1383,7 @@ public final class VoxyBlaze3DProbeRenderer {
         if (blazeModelStore == null) {
             return;
         }
-        pass.setPipeline(renderLodAboveTerrain ? LOD_WATER_OVERLAY_PIPELINE : LOD_WATER_PIPELINE);
+        pass.setPipeline((renderLodAboveTerrain ? LOD_WATER_OVERLAY_PIPELINE : LOD_WATER_PIPELINE).get());
         bindLodTables(pass);
         pass.setUniform("Fog", RenderSystem.getShaderFog());
         pass.bindTexture("Sampler0", blazeModelStore.atlasView(), blazeModelStore.atlasSampler());
