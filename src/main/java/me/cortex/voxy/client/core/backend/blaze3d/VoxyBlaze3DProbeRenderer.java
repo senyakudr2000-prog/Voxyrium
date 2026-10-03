@@ -9,6 +9,8 @@ import com.mojang.blaze3d.pipeline.BlendFunction;
 import com.mojang.blaze3d.pipeline.ColorTargetState;
 import com.mojang.blaze3d.pipeline.DepthStencilState;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
+import com.mojang.blaze3d.pipeline.BindGroupLayout;
+import com.mojang.blaze3d.shaders.UniformType;
 import com.mojang.blaze3d.platform.CompareOp;
 import com.mojang.blaze3d.systems.CommandEncoder;
 import com.mojang.blaze3d.systems.RenderPass;
@@ -106,11 +108,14 @@ public final class VoxyBlaze3DProbeRenderer {
     private static final VertexFormat LOD_CORNER_FORMAT = VertexFormat.builder(0)
             .addAttribute("Corner", GpuFormat.RG32_FLOAT).build();
     private static final VertexFormat LOD_INSTANCE_FORMAT = VertexFormat.builder(1)
-            .addAttribute("SectionOrigin", GpuFormat.RGB32_FLOAT)
-            .addAttribute("QuadData", GpuFormat.RG32_UINT)
-            .addAttribute("FaceData", GpuFormat.R32_UINT)
-            .addAttribute("Color", GpuFormat.RGBA8_UNORM)
-            .addAttribute("Material", GpuFormat.R32_UINT).build();
+            .addAttribute("QuadData", GpuFormat.RG32_UINT).build();
+    private static final BindGroupLayout LOD_TABLE_LAYOUT = BindGroupLayout.builder()
+            .withUniform("VoxySection", UniformType.UNIFORM_BUFFER)
+            .withUniform("VoxyLighting", UniformType.UNIFORM_BUFFER)
+            .withUniform("VoxyModelFaces", UniformType.TEXEL_BUFFER, GpuFormat.RGBA32_UINT)
+            .withUniform("VoxyModelInfo", UniformType.TEXEL_BUFFER, GpuFormat.RGBA32_UINT)
+            .withUniform("VoxyColours", UniformType.TEXEL_BUFFER, GpuFormat.R32_UINT).build();
+    private static GpuBufferSlice lodLightingUniform;
     private static final int MARKER_VERTEX_COUNT = 36;
     private static final int MARKER_BUFFER_SIZE = MARKER_VERTEX_COUNT * DefaultVertexFormat.POSITION_TEX_COLOR.getVertexSize();
     private static final int LOG_INTERVAL_FRAMES = 600;
@@ -200,6 +205,7 @@ public final class VoxyBlaze3DProbeRenderer {
             .withBindGroupLayout(BindGroupLayouts.MATRICES_PROJECTION)
             .withBindGroupLayout(BindGroupLayouts.FOG)
             .withBindGroupLayout(BindGroupLayouts.SAMPLER0_SAMPLER2)
+            .withBindGroupLayout(LOD_TABLE_LAYOUT)
             .withVertexShader(Identifier.fromNamespaceAndPath("voxy", "core/blaze3d_lod_terrain"))
             .withFragmentShader(Identifier.fromNamespaceAndPath("voxy", "core/blaze3d_lod_terrain"))
             .withVertexBinding(0, LOD_CORNER_FORMAT)
@@ -435,7 +441,8 @@ public final class VoxyBlaze3DProbeRenderer {
                                     + " selectionBudgetNs=" + LOD_SELECTION_BUDGET_NANOS
                                     + " validationBudgetNs=" + LOD_VALIDATION_BUDGET_NANOS
                                     + " uploadBudgetNs=" + LOD_UPLOAD_BUDGET_NANOS + " uploadBudgetBytes=" + LOD_UPLOAD_BUDGET_BYTES
-                                    + " maxPending=" + MAX_ASYNC_MESHES + " bytesPerQuad=" + Blaze3dSectionMesh.QUAD_STRIDE,
+                                    + " maxPending=" + MAX_ASYNC_MESHES + " bytesPerQuad=" + Blaze3dSectionMesh.QUAD_STRIDE
+                                    + " sectionHeaderBytes=" + Blaze3dQuadEncoder.SECTION_BYTES,
                             message -> Logger.warn(message));
                     benchmark.event("SESSION_START", "initialized=" + initialized + " frame=" + frameCount);
                     if (initialized) recordBenchmarkDevice();
@@ -649,6 +656,7 @@ public final class VoxyBlaze3DProbeRenderer {
                 + ", uploadMillis=" + formatMillis(lastFrameUploadNanos)
                 + ", bufferCreateMillis=" + formatMillis(lastFrameBufferCreateNanos)
                 + ", quadBytes=" + Blaze3dSectionMesh.QUAD_STRIDE
+                + ", sectionHeaderBytes=" + Blaze3dQuadEncoder.SECTION_BYTES
                 + ", bypassedIntermediate=" + bypassedIntermediateKeys.size()
                 + ", coarseningFallbacks=" + coarseningCoverage.size()
                 + ", innerRingBlocks=" + Math.round(buildRingWidth)
@@ -744,6 +752,7 @@ public final class VoxyBlaze3DProbeRenderer {
                     0, 0, 0, 0, 0, depthTarget.getWidth(0), depthTarget.getHeight(0));
             encoder.clearColorAndDepthTextures(lodColorTexture, new Vector4f(0.0f), lodDepthTexture, 0.0);
             uploadLodProjection(encoder, matrices.projection());
+            uploadLodLighting(encoder);
             if (testCubeVisible) {
                 uploadMarker(encoder, camera);
             }
@@ -817,6 +826,7 @@ public final class VoxyBlaze3DProbeRenderer {
             updateCurrentDrawFrustum(matrices, camera);
             CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
             ensureOffscreenTargets(colorTarget);
+            uploadLodLighting(encoder);
             encoder.clearColorAndDepthTextures(lodColorTexture, new Vector4f(0.0f), lodDepthTexture, 0.0);
             try (RenderPass pass = encoder.createRenderPass(
                     () -> "Voxy Blaze3D offscreen translucent",
@@ -1196,6 +1206,24 @@ public final class VoxyBlaze3DProbeRenderer {
         }
     }
 
+    private static void uploadLodLighting(CommandEncoder encoder) {
+        CardinalLighting lighting = Minecraft.getInstance().level.cardinalLighting();
+        ByteBuffer data = encoder.transientMemory().allocateCpu(16, Float.BYTES).order(ByteOrder.nativeOrder());
+        data.putFloat(quantizeShade(lighting.up())).putFloat(quantizeShade(lighting.down()))
+                .putFloat(quantizeShade(lighting.north())).putFloat(quantizeShade(lighting.east())).flip();
+        lodLightingUniform = encoder.transientMemory().uploadGpu(data,
+                RenderSystem.getDevice().getDeviceInfo().limits().minUniformOffsetAlignment(), GpuBuffer.USAGE_UNIFORM);
+    }
+
+    private static float quantizeShade(float shade) {
+        return Math.clamp(Math.round(shade * 255.0f), 0, 255) / 255.0f;
+    }
+
+    private static void bindLodTables(RenderPass pass) {
+        blazeModelStore.bindModelTables(pass);
+        pass.setUniform("VoxyLighting", lodLightingUniform);
+    }
+
     private static void drawOpaqueLods(RenderPass pass) {
         lastOpaqueDrawCalls = 0;
         lastOpaqueVertices = 0;
@@ -1203,6 +1231,7 @@ public final class VoxyBlaze3DProbeRenderer {
             return;
         }
         pass.setPipeline(renderLodAboveTerrain ? LOD_OVERLAY_PIPELINE : LOD_PIPELINE);
+        bindLodTables(pass);
         pass.setUniform("Fog", RenderSystem.getShaderFog());
         pass.bindTexture("Sampler0", blazeModelStore.atlasView(), blazeModelStore.atlasSampler());
         pass.bindTexture("Sampler2", Minecraft.getInstance().gameRenderer.levelLightmap(),
@@ -1211,6 +1240,7 @@ public final class VoxyBlaze3DProbeRenderer {
         pass.setVertexBuffer(0, lodCornerBuffer.slice());
         for (LodSectionMesh mesh : visibleLodMeshes) {
             if (mesh.opaqueQuadCount() != 0) {
+                pass.setUniform("VoxySection", mesh.sectionUniform());
                 pass.setVertexBuffer(1, mesh.opaqueInstances());
                 pass.drawIndexed(LOD_INDICES_PER_QUAD, mesh.opaqueQuadCount(), 0, 0, 0);
                 lastOpaqueDrawCalls++;
@@ -1232,6 +1262,7 @@ public final class VoxyBlaze3DProbeRenderer {
             return;
         }
         pass.setPipeline(renderLodAboveTerrain ? LOD_WATER_OVERLAY_PIPELINE : LOD_WATER_PIPELINE);
+        bindLodTables(pass);
         pass.setUniform("Fog", RenderSystem.getShaderFog());
         pass.bindTexture("Sampler0", blazeModelStore.atlasView(), blazeModelStore.atlasSampler());
         pass.bindTexture("Sampler2", Minecraft.getInstance().gameRenderer.levelLightmap(),
@@ -1239,6 +1270,7 @@ public final class VoxyBlaze3DProbeRenderer {
         pass.setIndexBuffer(lodIndexBuffer, IndexType.INT);
         pass.setVertexBuffer(0, lodCornerBuffer.slice());
         for (LodSectionMesh mesh : visibleWaterMeshes) {
+            pass.setUniform("VoxySection", mesh.sectionUniform());
             pass.setVertexBuffer(1, mesh.waterInstances());
             pass.drawIndexed(LOD_INDICES_PER_QUAD, mesh.waterQuadCount(), 0, 0, 0);
             lastWaterDrawCalls++;
@@ -1303,6 +1335,7 @@ public final class VoxyBlaze3DProbeRenderer {
         lodCornerBuffer = null;
         releaseBuffer(lodProjectionBuffer, "extended projection");
         lodProjectionBuffer = null;
+        lodLightingUniform = null; // Frame transient memory owns the underlying allocation.
         releaseBuffer(globalFogProjectionBuffer, "global fog projection");
         globalFogProjectionBuffer = null;
         releaseOffscreenTargets();
@@ -1781,9 +1814,8 @@ public final class VoxyBlaze3DProbeRenderer {
             Blaze3dBenchmark session = benchmark;
             if (session != null) generationService.setBuildObserver(session::buildAttempt);
             Blaze3dModelStore completedStore = store;
-            CardinalLighting completedLighting = Minecraft.getInstance().level.cardinalLighting();
             generationService.setResultConsumer(section -> acceptBuiltSection(
-                    section, generation, completedStore, completedLighting));
+                    section, generation, completedStore));
 
             blazeModelStore = store;
             modelBakery = bakery;
@@ -1842,7 +1874,7 @@ public final class VoxyBlaze3DProbeRenderer {
     }
 
     private static void acceptBuiltSection(BuiltSection section, long generation,
-                                           Blaze3dModelStore store, CardinalLighting lighting) {
+                                           Blaze3dModelStore store) {
         PendingLodMesh pending = pendingMeshFingerprints.get(section.position);
         if (generation != mesherGeneration || pending == null || store != blazeModelStore) {
             section.free();
@@ -1863,7 +1895,7 @@ public final class VoxyBlaze3DProbeRenderer {
                 throw new IllegalStateException("Cortex section exceeds the Blaze3D quad safety limit: "
                         + WorldEngine.pprintPos(section.position));
             }
-            long bytes = totalQuads * Blaze3dSectionMesh.QUAD_STRIDE;
+            long bytes = Blaze3dQuadEncoder.bytes(Math.toIntExact(totalQuads));
             // Reserve before packing so simultaneous workers cannot overrun CPU staging.
             if (!reserveStagingBytes(bytes)) {
                 if (session != null) session.count(Blaze3dBenchmark.Counter.STAGING_LIMIT);
@@ -1872,7 +1904,7 @@ public final class VoxyBlaze3DProbeRenderer {
             }
             reservedBytes = bytes;
             long packStart = session == null ? 0L : System.nanoTime();
-            mesh = Blaze3dSectionMesh.pack(section, store, lighting);
+            mesh = Blaze3dSectionMesh.pack(section, store);
             if (session != null) session.prepared(request, System.nanoTime() - packStart);
             PreparedLodMesh prepared = new PreparedLodMesh(
                     fingerprint, mesh.requiredTextureVersion(), bytes, mesh, session, request, pending);
@@ -2049,7 +2081,7 @@ public final class VoxyBlaze3DProbeRenderer {
         try {
             instances = RenderSystem.getDevice().createBuffer(
                     () -> "Voxy Blaze3D Cortex quad instances " + WorldEngine.pprintPos(key),
-                    GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST, mesh.instances().duplicate());
+                    GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_COPY_DST, mesh.instances().duplicate());
         } catch (RuntimeException | OutOfMemoryError exception) {
             releaseLodMeshBuffer(instances, key);
             lodAllocationFailures++;
@@ -4542,7 +4574,7 @@ public final class VoxyBlaze3DProbeRenderer {
     }
 
     private static long geometryBytes(int opaqueQuads, int waterQuads) {
-        return (long) (opaqueQuads + waterQuads) * Blaze3dSectionMesh.QUAD_STRIDE;
+        return Blaze3dQuadEncoder.bytes(opaqueQuads + waterQuads);
     }
 
     private static long geometryBytes(LodSectionMesh mesh) {
@@ -4758,14 +4790,14 @@ public final class VoxyBlaze3DProbeRenderer {
 
     private record LodSectionMesh(LodSectionCoordinate coordinate, GpuBuffer instanceBuffer,
                                   int opaqueQuadCount, int waterQuadCount,
-                                  @Nullable GpuBufferSlice opaqueInstances,
+                                  GpuBufferSlice sectionUniform, @Nullable GpuBufferSlice opaqueInstances,
                                   @Nullable GpuBufferSlice waterInstances) {
         private LodSectionMesh(LodSectionCoordinate coordinate, GpuBuffer buffer,
                                int opaqueQuads, int waterQuads) {
-            this(coordinate, buffer, opaqueQuads, waterQuads,
-                    opaqueQuads == 0 ? null : buffer.slice((long) waterQuads * Blaze3dSectionMesh.QUAD_STRIDE,
+            this(coordinate, buffer, opaqueQuads, waterQuads, buffer.slice(0, Blaze3dQuadEncoder.SECTION_BYTES),
+                    opaqueQuads == 0 ? null : buffer.slice(Blaze3dQuadEncoder.SECTION_BYTES + (long) waterQuads * Blaze3dSectionMesh.QUAD_STRIDE,
                             (long) opaqueQuads * Blaze3dSectionMesh.QUAD_STRIDE),
-                    waterQuads == 0 ? null : buffer.slice(0L, (long) waterQuads * Blaze3dSectionMesh.QUAD_STRIDE));
+                    waterQuads == 0 ? null : buffer.slice(Blaze3dQuadEncoder.SECTION_BYTES, (long) waterQuads * Blaze3dSectionMesh.QUAD_STRIDE));
         }
     }
 

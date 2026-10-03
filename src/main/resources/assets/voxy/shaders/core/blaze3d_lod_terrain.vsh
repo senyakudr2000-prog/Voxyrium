@@ -10,13 +10,18 @@ layout(std140) uniform Projection {
     mat4 ProjMat;
 };
 
-// Corner advances per vertex. The remaining attributes advance once per quad instance.
+// Only the original Cortex quad advances per instance; metadata is shared on the GPU.
 in vec2 Corner;
-in vec3 SectionOrigin;
 in uvec2 QuadData;
-in uint FaceData;
-in vec4 Color;
-in uint Material;
+layout(std140) uniform VoxySection {
+    vec4 SectionOriginScale;
+};
+layout(std140) uniform VoxyLighting {
+    vec4 DirectionalShades; // up, down, north/south, east/west
+};
+uniform usamplerBuffer VoxyModelFaces;
+uniform usamplerBuffer VoxyModelInfo;
+uniform usamplerBuffer VoxyColours;
 
 uniform sampler2D Sampler2;
 
@@ -38,20 +43,24 @@ float fluidHeightOffset(int face, int axis, ivec2 corner, uint heights) {
 void main() {
     int face = int(QuadData.x & 7u);
     int axis = face >> 1;
+    modelId = int((QuadData.x >> 26u) | ((QuadData.y & 1023u) << 6u));
+    uvec4 info = texelFetch(VoxyModelInfo, modelId);
+    uint FaceData = face < 4 ? texelFetch(VoxyModelFaces, modelId)[face] : info[face - 4];
+    uint Material = info.z;
     bool fluid = (Material & 16u) != 0u;
-    float scale = float(1u << ((Material >> 8u) & 7u));
+    float scale = SectionOriginScale.w;
     vec2 textureMin = vec2(FaceData & 15u, (FaceData >> 8u) & 15u) / 16.0 - 0.00005;
     vec2 textureEnd = vec2((FaceData >> 4u) & 15u, (FaceData >> 12u) & 15u) / 16.0 + 1.0 / 16.0;
     vec2 size = fluid ? vec2(1.0) : vec2((QuadData.x >> 3u) & 15u, (QuadData.x >> 7u) & 15u) + 1.0;
-    vec2 textureSize = textureEnd - textureMin + size - 1.0;
+    vec2 textureSpan = textureEnd - textureMin + size - 1.0;
     vec2 geometryMin = fluid ? vec2(0.0) : textureMin;
-    vec2 geometrySize = fluid ? vec2(1.0) : textureSize;
+    vec2 geometrySize = fluid ? vec2(1.0) : textureSpan;
     uint encodedDepth = (FaceData >> 16u) & 63u;
     if (encodedDepth == 63u) encodedDepth = 64u;
     float depth = fluid ? 0.0 : float(encodedDepth) / 64.0;
     if ((face & 1) != 0) depth = 1.0 - depth;
 
-    vec3 position = SectionOrigin + vec3((QuadData.x >> 21u) & 31u,
+    vec3 position = SectionOriginScale.xyz + vec3((QuadData.x >> 21u) & 31u,
             (QuadData.x >> 16u) & 31u, (QuadData.x >> 11u) & 31u) * scale;
     vec2 offset = geometrySize * Corner * scale;
     if (axis == 0) {
@@ -70,8 +79,7 @@ void main() {
     }
     vec4 viewPosition = ModelViewMat * vec4(position, 1.0);
     gl_Position = ProjMat * viewPosition;
-    texCoord0 = textureMin + textureSize * Corner;
-    modelId = int((QuadData.x >> 26u) | ((QuadData.y & 1023u) << 6u));
+    texCoord0 = textureMin + textureSpan * Corner;
     quadFlags = int((QuadData.y >> 23u) & 255u) | (face << 8)
             | (int((FaceData >> 24u) & 3u) << 11);
     if (((FaceData >> 22u) & 1u) != 0u
@@ -82,8 +90,17 @@ void main() {
     int packedLight = quadFlags & 0xFF;
     vec2 lightUv = clamp(vec2((packedLight >> 4) & 0xF, packedLight & 0xF) / 16.0
             + (0.5 / 16.0), vec2(0.5 / 16.0), vec2(15.5 / 16.0));
-    float directionalShade = Color.a;
-    tintColor = vec4(Color.rgb, 1.0);
+    float directionalShade = DirectionalShades.x;
+    if ((Material & 8u) != 0u) {
+        directionalShade = axis == 1 ? DirectionalShades.z : axis == 2 ? DirectionalShades.w
+                : face == 1 ? DirectionalShades.x : DirectionalShades.y;
+    }
+    uint tint = info.w;
+    if ((Material & 2u) != 0u) {
+        uint index = tint + ((QuadData.y >> 14u) & 511u);
+        tint = index < uint(textureSize(VoxyColours)) ? texelFetch(VoxyColours, int(index)).r : 0xFFFFFFFFu;
+    }
+    tintColor = vec4(vec3((tint >> 16u) & 255u, (tint >> 8u) & 255u, tint & 255u) / 255.0, 1.0);
     vertexLighting = texture(Sampler2, lightUv) * vec4(vec3(directionalShade), 1.0);
     sphericalDistance = length(viewPosition.xyz);
 }

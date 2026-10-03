@@ -2,7 +2,6 @@ package me.cortex.voxy.client.core.backend.blaze3d;
 
 import me.cortex.voxy.client.core.rendering.building.BuiltSection;
 import me.cortex.voxy.common.world.WorldEngine;
-import net.minecraft.world.level.CardinalLighting;
 import org.jetbrains.annotations.Nullable;
 import org.lwjgl.system.MemoryUtil;
 
@@ -28,8 +27,8 @@ final class Blaze3dSectionMesh implements AutoCloseable {
         this.requiredTextureVersion = requiredTextureVersion;
     }
 
-    static Blaze3dSectionMesh pack(BuiltSection section, Blaze3dModelStore models, CardinalLighting lighting) {
-        if (section.isEmpty()) {
+    static Blaze3dSectionMesh pack(BuiltSection section, Blaze3dModelStore models) {
+        if (section.isEmpty() || section.geometryBuffer.size == 0) {
             return new Blaze3dSectionMesh(section.position, null, 0, 0, 0L);
         }
 
@@ -46,33 +45,27 @@ final class Blaze3dSectionMesh implements AutoCloseable {
             float originX = WorldEngine.getX(section.position) * sectionSize;
             float originY = WorldEngine.getY(section.position) * sectionSize;
             float originZ = WorldEngine.getZ(section.position) * sectionSize;
+            Blaze3dQuadEncoder.section(instances, originX, originY, originZ, level);
             int previousModel = -1;
-            int previousBiome = -1;
-            int modelFlags = 0;
-            int tint = -1;
+            // Keep Cortex's binary quad unchanged. The GPU reads shared model/biome tables.
             for (int index = 0; index < totalQuads; index++) {
                 long quad = MemoryUtil.memGetLong(source + (long) index * Long.BYTES);
-                int face = (int) (quad & 7L);
                 int modelId = (int) ((quad >>> 26) & 0xFFFFL);
-                int biomeId = (int) ((quad >>> 46) & 0x1FFL);
                 if (modelId != previousModel) {
-                    modelFlags = models.modelFlags(modelId);
                     requiredTextureVersion = Math.max(requiredTextureVersion, models.textureVersion(modelId));
                     previousModel = modelId;
-                    previousBiome = -1;
                 }
-                if (biomeId != previousBiome) {
-                    tint = models.tintColour(modelId, biomeId);
-                    if (tint == -1) tint = 0xFFFF_FFFF;
-                    previousBiome = biomeId;
-                }
-                int shade = Math.clamp(Math.round(directionalTint(lighting, (modelFlags & 8) != 0, face)
-                        * 255.0f), 0, 255);
-                Blaze3dQuadEncoder.put(instances,
-                        originX, originY, originZ, quad, models.faceData(modelId, face),
-                        tint, shade, modelFlags, level);
             }
-            if (instances != null) instances.flip();
+            if (ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN) {
+                MemoryUtil.memCopy(source, MemoryUtil.memAddress(instances), section.geometryBuffer.size);
+                instances.position(instances.position() + (int) section.geometryBuffer.size);
+            } else {
+                for (int index = 0; index < totalQuads; index++) {
+                    Blaze3dQuadEncoder.put(instances, MemoryUtil.memGetLong(source + (long) index * Long.BYTES));
+                }
+            }
+            requiredTextureVersion = Math.max(requiredTextureVersion, models.biomeVersion());
+            instances.flip();
             return new Blaze3dSectionMesh(section.position, instances, opaqueQuads, translucentQuads,
                     requiredTextureVersion);
         } catch (RuntimeException | OutOfMemoryError exception) {
@@ -85,20 +78,11 @@ final class Blaze3dSectionMesh implements AutoCloseable {
         if (quadCount == 0) {
             return null;
         }
-        long byteCount = (long) quadCount * QUAD_STRIDE;
+        long byteCount = Blaze3dQuadEncoder.bytes(quadCount);
         if (byteCount > Integer.MAX_VALUE) {
             throw new IllegalArgumentException("Packed LoD section is too large: " + byteCount + " bytes");
         }
         return MemoryUtil.memAlloc((int) byteCount).order(ByteOrder.nativeOrder());
-    }
-
-    private static float directionalTint(CardinalLighting lighting, boolean shaded, int face) {
-        if (!shaded) return lighting.up();
-        return switch (face >> 1) {
-            case 1 -> lighting.north();
-            case 2 -> lighting.east();
-            default -> face == 1 ? lighting.up() : lighting.down();
-        };
     }
 
     long position() {
@@ -122,8 +106,7 @@ final class Blaze3dSectionMesh implements AutoCloseable {
     }
 
     long geometryBytes() {
-        return (long) (this.opaqueQuadCount + this.translucentQuadCount)
-                * QUAD_STRIDE;
+        return Blaze3dQuadEncoder.bytes(this.opaqueQuadCount + this.translucentQuadCount);
     }
 
     boolean isEmpty() {

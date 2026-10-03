@@ -5,8 +5,8 @@ import me.cortex.voxy.common.Logger;
 import oshi.SystemInfo;
 
 /**
- * Estimates the working set and residency budget of the Blaze3D renderer. Each quad uses a
- * 32-byte instance instead of four 28-byte vertices. Keep the previous residency headroom to
+ * Estimates the working set and residency budget of the Blaze3D renderer. Each quad uses an
+ * 8-byte Cortex quad plus one 16-byte header per section. Keep the previous residency headroom to
  * spend the savings on more detail, cached branches and longer render distances.
  */
 public final class Blaze3dMemoryBudget {
@@ -17,7 +17,7 @@ public final class Blaze3dMemoryBudget {
     private static final long MIN_STAGING_BUDGET = 128L * MIB;
     private static final long MAX_STAGING_BUDGET = 768L * MIB;
     // Full 65,536-model RGBA atlas including the four allocated mip levels, plus render targets,
-    // the shared index buffer and small fixed GPU resources.
+    // the shared index buffer, 2.25 MiB of model/colour tables and small fixed GPU resources.
     private static final long FIXED_VRAM_BYTES = 576L * MIB;
     // Captured Minecraft atlas, baked-model upload results and CPU metadata during population.
     private static final long FIXED_RAM_BYTES = 256L * MIB;

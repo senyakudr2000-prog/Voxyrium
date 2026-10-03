@@ -20,6 +20,7 @@ public final class Blaze3dLodStreamingTest {
         intermediateFallbacks();
         System.out.println("Blaze3D streaming: " + checks + " checks passed.");
         Blaze3dQuadEncoderTest.run();
+        Blaze3dModelEncoderTest.run();
         Blaze3dBenchmarkTest.run();
         Blaze3dFingerprintCacheTest.run();
         me.cortex.voxy.client.core.rendering.building.RenderTaskPriorityTest.run();

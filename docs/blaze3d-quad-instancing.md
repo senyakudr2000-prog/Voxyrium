@@ -1,101 +1,115 @@
-# Blaze3D quad instancing and CPU optimization
+# Blaze3D eight-byte quads
 
-## Design
+## Mesh layout
 
-The previous mesh format already omitted normals. It stored position, UV, model,
-flags, tint, and directional shading, so there were no smooth normals to remove.
-Its avoidable cost was expanding each Cortex quad into four CPU vertices before
-uploading it.
+Blaze3D now uploads Cortex's original eight-byte quad instead of expanding it into
+a 32-byte instance. The quad retains face, local position, size or fluid heights,
+model ID, biome ID and light values. No smooth normals were present in either
+format; face orientation already provides the directional shading information.
 
-The new format uses one 32-byte record per quad. Small shared buffers provide the
-four corners and six indices. The vertex shader reconstructs positions, UVs, and
-fluid heights. It requires no SSBOs, compute shaders, graphics extensions, or extra
-model-atlas reads: the record carries the necessary metadata.
+Each nonempty section has a 16-byte header containing its world origin and LOD
+scale. The same GPU buffer serves as the section uniform and vertex storage:
 
-The API was checked against the installed Minecraft 26.2 classes: vertex formats
-with a step rate of one, integer attributes, and two vertex bindings. Corners use
-an explicit attribute, avoiding reliance on vertex-ID translation between backends.
+```text
+offset 0:                  section origin XYZ and scale (four floats)
+offset 16:                 translucent quads (eight bytes each)
+offset 16 + waterCount*8:  opaque quads (eight bytes each)
+```
 
-| Geometry cost | Before | After |
+Opaque and translucent draws bind different vertex slices and the same header
+slice. The header is at offset zero, satisfying uniform offset alignment without
+padding or a second GPU allocation. Shared buffers still provide four corners and
+six indices; the vertex shader expands geometry, UVs and fluid heights.
+
+| Cost | Previous instancing | Current instancing |
 | --- | ---: | ---: |
-| Bytes per quad in staging, RAM cache, and VRAM | 112 | 32 |
-| Bytes for one million quads | 112 MB | 32 MB |
-| Allocations/uploads per section containing opaque geometry and water | 2 | 1 |
-| Shared index buffer | 1,572,864 bytes | 24 bytes |
-| Shared corner buffer | None | 32 bytes |
+| Geometry bytes per quad | 32 | 8 |
+| Header bytes per nonempty section | 0 | 16 |
+| Geometry bytes for one million quads, excluding headers | 32 MB | 8 MB |
+| GPU geometry allocations per nonempty section | 1 | 1 |
+| Shared model and biome tables | None | 2.25 MiB |
 
-The geometry payload is reduced by approximately 71.4%. This does not imply the
-same reduction in total VRAM or the same increase in FPS: atlases and render
-targets still exist, and the shader performs more arithmetic. Draw calls per
-section and pass remain unchanged. Actual performance depends on the balance
-between CPU work, transfers, vertices, and fragments on each GPU.
+The quad payload decreases by 75%. Total geometry bytes are `8 * quadCount +
+16 * nonemptySectionCount`, so total mesh savings are slightly smaller. This is a
+transfer/storage ratio, not a measured FPS improvement.
 
-## Memory and CPU
+## Shared GPU metadata
 
-- Residency, staging, and cache budgets are preserved. The saved space can retain
-  up to 3.5 times as many quads within the same geometry capacity. Configured render
-  distance and quality are not increased automatically.
-- Working-set estimates account for the compact format while keeping the previous
-  headroom for caches and transitions.
-- Opaque geometry and water share one buffer per section, with separate slices
-  computed when the mesh is created. Water sorting remains per section.
-- Packing computes the origin once per section and reuses consecutive lookups for
-  the same model and biome.
-- Worker-prepared textures are stored directly in native memory, eliminating the
-  intermediate `byte[]` and its later copy/allocation on the render thread. Queued
-  buffers are freed on upload or world shutdown, with publication synchronized
-  against shutdown. Texture uploads are limited to 64 models and 2 ms per frame,
-  always allowing an initial model to make progress.
-- The RAM cache uses access-order LRU without scanning the entire cache for the
-  farthest mesh on every eviction. VRAM coverage protection remains independent.
-- Culling visits active keys rather than the entire GPU cache. The water list is
-  reused instead of allocating a new stream result each frame.
-- Change notifications retain priority. Periodic neighborhood fingerprint audits
-  decrease from 32 to eight per frame.
-- Opaque fragments without cutout or conditional tint skip the mip-zero read.
-  Other fragments share that read between alpha and tint classification.
+The public Minecraft 26.2 Blaze3D API supports integer texel buffers through
+`BindGroupLayout`, `UniformType.TEXEL_BUFFER` and `RenderPass.setUniform`. Minecraft's
+cloud renderer uses the same API. No native graphics calls, SSBOs or compute
+shaders are required by this change.
 
-## Intermediate LODs
+Two `RGBA32_UINT` buffers each contain one texel per model, up to 65536 models.
+The first holds face metadata for faces 0–3. The second holds faces 4–5, material
+flags and either a constant ARGB tint or a biome palette base. A separate
+`R32_UINT` buffer contains up to 65536 biome colours. Splitting the model data
+keeps each buffer within 65536 texels instead of requiring a 131072-texel buffer.
 
-New L2/L3 meshes within 512 blocks are skipped when an active resident ancestor
-already covers the branch. Intermediate nodes remain in coverage accounting and
-become ready once all required children are ready. They do not need their own
-mesh to complete that handoff.
+The vertex shader reads model info, reads the first table when the face is 0–3,
+and reads the palette only for biome-dependent tint. These reads reuse shared
+metadata across quads. Directional shades use a 16-byte per-pass uniform uploaded
+through Blaze3D's reusable transient memory, preserving the previous eight-bit
+shade quantization. Section uniforms add a bind per section; draw counts remain
+unchanged. Extra vertex-stage table reads may affect stationary performance and
+must be measured on the target GPU.
 
-L4 remains the initial coverage fallback when no alternative exists, and L1 remains
-the final fallback before L0. Selected leaves, coarsening replacements, and updates
-to resident meshes are never skipped. This avoids building every quality level
-when coverage already exists while preserving the fallback that prevents pop-in.
+## CPU work and publication
+
+Packing scans model IDs for the required upload version, then copies the native
+quad array in bulk on little-endian systems. A word-by-word fallback preserves
+the two-word attribute layout on big-endian systems. Packing no longer expands
+per-quad face metadata, tint, directional shade or repeated section origins.
+
+The bakery worker prepares immutable native snapshots of model metadata, biome
+colours and atlas texture data. One ordered queue publishes all parts of each
+update before advancing its uploaded version. Prepared meshes wait for their
+dependencies before admission. Biome repacks upload the palette and one coalesced
+range of model-info records; unchanged face records are not resent. Existing
+resident quads use the updated palette without rebuilding their geometry.
+
+Queued native buffers are released after submission or world shutdown. Admission
+retains the previous 64-update/2 ms limit, allowing an initial update to progress.
+RAM cache, staging and VRAM geometry budgets remain unchanged. Header bytes are
+counted once in actual staging/cache/residency totals; the fixed metadata tables
+fit within the existing fixed-resource allowance. Configured distance and detail
+are not increased automatically. At equal budgets, large meshes can retain almost
+four times as many quads as the previous 32-byte representation.
+
+## Coverage and diagnostics
+
+The earlier progressive-coverage correction remains in place: cold L3/L2 meshes
+provide fallback while finer coverage is incomplete. Intermediate meshes can be
+skipped when completed child coverage can already replace them. Virtual parents
+do not consume a visible reveal slot. The compact format does not change this
+coverage policy.
+
+`/voxyLodDebug` reports `quadBytes=8` and `sectionHeaderBytes=16`. The automatic live
+benchmark records these values in its header, actual geometry byte totals, and
+`modelTableBytes`/cumulative `uploadedTableBytes` in model state. The live file
+remains `<game directory>/logs/voxy-benchmarks/latest.txt`.
+
+Compare mesh pack time, buffer creation time, queue waits and frame intervals
+during loading, movement and a stationary interval after residency settles. CPU
+submission timings do not measure completed GPU transfer time. Shared metadata
+upload bytes are additional to geometry bytes and atlas texture uploads.
 
 ## Validation
 
-Code, the binary contract, and local API signatures were reviewed during
-implementation. Compilation, automated execution, and in-game validation of the
-quad-instancing changes were left to the maintainer. The prepared checks run with:
+The device-free suite checks section headers, lossless eight-byte quads, 10000
+randomized quad/model/biome/light round trips, all six face records, constant tint,
+the final palette entry, immutable biome relocation snapshots, and existing
+streaming/benchmark/revision policies. Run:
 
 ```sh
-./gradlew verifyBlaze3dLodStreaming --offline
 ./gradlew build --offline
 ```
 
-The suite includes the original 29 checks, eight cases for safely skipping
-intermediate LODs, and twelve binary-format checks, including 10,000 randomized
-quad round trips. These verify offsets, size, tint, lighting, coordinates, LOD,
-and fields crossing 32-bit word boundaries. They do not execute or certify the
-shader.
-
-In-game checks should focus on sloped water/lava, partial faces, transparency,
-biome tint, negative coordinates, zoom, turns, and memory pressure. Compare both
-initial loading and stationary scenes with all meshes resident to distinguish
-streaming improvements from steady-state drawing cost.
-
-`/voxyLodDebug` adds `quadBytes=32`, `bypassedIntermediate`, and
-`bufferCreateMillis`. The last counter measures CPU time inside the buffer
-creation/upload call, not GPU transfer time. `uploadMillis` also includes result
-validation and management. Compare both alongside `frameUploads`, queue sizes,
-geometry bytes, and frame times.
-
-If queues are ready but repeatedly hit the eight-mesh limit, compare
-`/setVoxyLodUploadsPerFrame 8` and `/setVoxyLodUploadsPerFrame 16` along the same
-route. Time and byte limits still apply. The default count has not been increased
-without first measuring the cost in a game session.
+The full offline build, including backend isolation and the device-free suite,
+passed with Java 25. The terrain vertex and fragment shaders were also compiled
+to SPIR-V for Vulkan 1.1 and OpenGL 4.5 with the locally cached Shaderc library.
+This validates compilation, not a device pipeline
+or rendering performance. In-game visual checks remain with the maintainer:
+partial and cutout faces, biome boundaries, water/lava slopes, negative
+coordinates, LOD transitions and resource reload/world changes. Compare initial
+loading and fully resident scenes to separate streaming and drawing costs.
