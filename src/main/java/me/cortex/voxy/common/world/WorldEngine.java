@@ -131,15 +131,15 @@ public final class WorldEngine {
         if (section.tracker != this.sectionTracker) {
             throw new IllegalStateException("Section is not from here");
         }
+        // Publish the revision before listeners can launch asynchronous reads of this change.
+        if ((changeState & UPDATE_TYPE_DONT_SAVE) == 0) section.markDirty();
+        else section.markRenderDirty();
         ISectionChangeCallback callback = this.dirtyCallback;
         if (callback != null) {
             callback.accept(section, changeState, neighborMsk);
         }
         for (ISectionChangeCallback listener : this.changeListeners) {
             listener.accept(section, changeState, neighborMsk);
-        }
-        if ((changeState&UPDATE_TYPE_DONT_SAVE)==0) {
-            section.markDirty();
         }
     }
 

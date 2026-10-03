@@ -480,7 +480,10 @@ sourceSets {
             srcDirs = ['src/main/java', 'src/streamingTest/java']
             include '**/Blaze3dLodStreaming.java', '**/Blaze3dLodStreamingTest.java',
                     '**/Blaze3dQuadEncoder.java', '**/Blaze3dQuadEncoderTest.java',
-                    '**/Blaze3dBenchmark.java', '**/Blaze3dBenchmarkTest.java'
+                    '**/Blaze3dBenchmark.java', '**/Blaze3dBenchmarkTest.java',
+                    '**/Blaze3dFingerprintCache.java', '**/Blaze3dFingerprintCacheTest.java',
+                    '**/RenderTaskPriority.java', '**/RenderTaskPriorityTest.java',
+                    '**/RenderRevision.java', '**/RenderRevisionTest.java'
         }
     }
 }

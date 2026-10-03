@@ -1,6 +1,6 @@
 # Blaze3D renderer audit and live benchmark
 
-This audit compares the local Blaze3D renderer against both Native OpenGL and Native Vulkan. The four recently pulled commits do not change the renderer or shaders inspected here. Findings below are confirmed control-flow and data-layout differences. Their contribution to a particular machine's frame time requires a runtime capture. Compilation and device-free checks passed; in-game visual validation remains with the user.
+This audit compares the diagnostic baseline (`b7c097d0`) against both Native OpenGL and Native Vulkan. The first optimization pass is described separately below. The four recently pulled commits do not change the renderer or shaders inspected here. Findings below are confirmed control-flow and data-layout differences. Their contribution to a particular machine's frame time requires a runtime capture. Compilation and device-free checks passed; in-game visual validation remains with the user.
 
 ## Findings, in priority order
 
@@ -140,4 +140,23 @@ Capture world entry, 15–30 seconds stationary, movement across several chunks,
 
 First correlate near L0 upload readiness against L4 handoff time. Then inspect acquisition/hierarchy/transition maxima during low-FPS loading. If CPU work is small but intervals remain high, use a GPU capture before deciding between transfer, terrain draws, and full-screen passes. Implement local reveal and CPU hierarchy separation before relaxing global work budgets; then batch geometry storage/uploads and draw submission.
 
-The device-free verification task now includes live-file visibility, session archive isolation, request-stage serialization, percentile behavior and I/O failure checks. Compilation, streaming/quad checks, live benchmark regression checks (including stale completions and failed producers), and backend isolation passed with Java 25 using `compileJava verifyBlaze3dLodStreaming verifyBlaze3dBackendIsolation --offline`. This change adds diagnostics and the audit; scheduling, transition semantics, mesh layout and GPU rendering behavior remain as audited.
+The device-free verification task now includes live-file visibility, session archive isolation, request-stage serialization, percentile behavior and I/O failure checks. Compilation, streaming/quad checks, live benchmark regression checks (including stale completions and failed producers), and backend isolation passed with Java 25 using `compileJava verifyBlaze3dLodStreaming verifyBlaze3dBackendIsolation --offline`. That baseline added diagnostics and the audit without changing scheduling, transition semantics or mesh layout.
+
+
+## Implemented first optimization pass
+
+Neighborhood revision reads now run on a dedicated CPU worker instead of inside scheduling, idle validation, or upload acceptance on the render thread. A bounded cache retains up to 32768 fingerprints and queues at most 64 reads plus the in-flight read. Lookup never waits for storage. Unchanged idle checks reuse cached results; change notifications invalidate all 27 affected positions, including diagonals. Missing centers retry after one second. Loader failures remain retryable. Uploads whose validation is pending retain their staging data until a confirmed fingerprint arrives.
+
+The worker owns a separate world reference. Closing discards queued work and prevents stale publication while allowing an in-progress storage read to finish before releasing that reference. It does not interrupt shared database I/O. Cache entries have distinct identities so a read started before an edit cannot overwrite the replacement entry. Pending mesh cleanup likewise uses request object identity, even when two requests have equal fingerprints. Bootstrap failures now shut down the generation service before freeing its bakery.
+
+World revisions are published before change callbacks, including changes that do not request a save. Revision identities also differ across section eviction/reload, preventing a changed section from accidentally comparing equal after its local counter would previously have reset to zero. Concurrent revision advancement remains monotonic.
+
+Build and upload order now uses distance ring first, followed by progressive levels inside that ring. Nearby refinement can run before distant roots; immediate siblings still share the parent ring to complete safe handoffs. The mesh worker accepts this rank and preserves it across model retries. Native callers retain their original priority encoding.
+
+Cold intermediate L3/L2 meshes are retained whenever fine coverage is still incomplete. Existing completed child coverage still avoids redundant intermediate work. Virtual parents no longer consume the visible reveal count or add an unnecessary frame of descendant delay. Coverage checks still retain a real parent until its required children are ready. Hierarchy availability polling now has a 0.5 ms admission deadline between nodes; a single synchronous world read can still exceed it.
+
+The live log adds `ASYNC_FINGERPRINT` records with worker duration and acquisition count, `FINGERPRINT_WAIT` guard counts, and fingerprint cache/queue gauges in `STATE`. The baseline `FINGERPRINT` frame stage remains for log compatibility and no longer measures worker reads; worker durations must not be added to render-thread stages.
+
+Validation: `build --offline` with Java 25, including quad/streaming/benchmark regression checks and backend isolation. Added device-free checks block the loader to verify nonblocking lookup, stale-result rejection, queue pressure, cache reuse/eviction, failure recovery, world-reference release, native priority compatibility, and concurrent revision identities. No in-game or GPU performance improvement is claimed before the user's visual tests and live capture.
+
+Remaining structural work includes synchronous hierarchy selection and storage enumeration, expensive transition preparation/snapshots, per-section GPU allocation/draw submission, the 32-byte quad payload, and conservative Sodium coverage suppression. RAM/VRAM geometry cache budgets and GPU mesh ABI are unchanged by this pass. The next capture should distinguish CPU work, worker throughput and GPU submission costs before selecting the next upload/storage redesign.

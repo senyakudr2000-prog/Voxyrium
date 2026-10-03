@@ -21,25 +21,26 @@ public final class Blaze3dLodStreamingTest {
         System.out.println("Blaze3D streaming: " + checks + " checks passed.");
         Blaze3dQuadEncoderTest.run();
         Blaze3dBenchmarkTest.run();
+        Blaze3dFingerprintCacheTest.run();
+        me.cortex.voxy.client.core.rendering.building.RenderTaskPriorityTest.run();
+        me.cortex.voxy.common.world.RenderRevisionTest.run();
     }
 
     private static void intermediateFallbacks() {
-        check(Blaze3dLodStreaming.skipIntermediate(3, 4, false, false, true, 0),
-                "Near L3 can be virtual while a resident root covers its descendants");
-        check(Blaze3dLodStreaming.skipIntermediate(2, 4, false, false, true, 512),
-                "Covered L2 may also be bypassed within the near region");
-        check(!Blaze3dLodStreaming.skipIntermediate(4, 4, false, false, false, 0),
+        check(!Blaze3dLodStreaming.skipIntermediate(3, 4, false, false, false),
+                "A resident root alone cannot justify skipping its immediate fallback children");
+        check(!Blaze3dLodStreaming.skipIntermediate(2, 4, false, false, false),
+                "Cold L2 coverage must not wait for hundreds of L0/L1 descendants");
+        check(Blaze3dLodStreaming.skipIntermediate(3, 4, false, false, true),
+                "Ready finer coverage avoids redundant intermediate uploads");
+        check(!Blaze3dLodStreaming.skipIntermediate(4, 4, false, false, true),
                 "Cold-start roots remain the coverage safety net");
-        check(!Blaze3dLodStreaming.skipIntermediate(1, 4, false, false, true, 0),
+        check(!Blaze3dLodStreaming.skipIntermediate(1, 4, false, false, true),
                 "L1 keeps progressive coverage before L0 is ready");
-        check(!Blaze3dLodStreaming.skipIntermediate(2, 4, true, false, true, 0),
+        check(!Blaze3dLodStreaming.skipIntermediate(2, 4, true, false, true),
                 "Selected leaves and coarsening targets must always be built");
-        check(!Blaze3dLodStreaming.skipIntermediate(2, 4, false, true, true, 0),
+        check(!Blaze3dLodStreaming.skipIntermediate(2, 4, false, true, true),
                 "Resident intermediate meshes stay eligible for dirty updates");
-        check(!Blaze3dLodStreaming.skipIntermediate(3, 4, false, false, false, 0),
-                "Never bypass the only available fallback in an uncovered branch");
-        check(!Blaze3dLodStreaming.skipIntermediate(2, 4, false, false, true, 513),
-                "Far terrain keeps ordinary progressive refinement");
     }
 
     private static void coarseningKeepsCoverageUntilUpload() {
@@ -109,9 +110,12 @@ public final class Blaze3dLodStreamingTest {
     }
 
     private static void prefetchAndBuildOrder() {
-        check(Blaze3dLodStreaming.buildPriority(4, 4, 4)
-                        < Blaze3dLodStreaming.buildPriority(0, 4, 0),
-                "Distant root coverage precedes near fine detail");
+        check(Blaze3dLodStreaming.buildPriority(0, 4, 0)
+                        < Blaze3dLodStreaming.buildPriority(4, 4, 4),
+                "Nearby detail must not wait for all distant roots");
+        check(Blaze3dLodStreaming.buildPriority(4, 4, 0)
+                        < Blaze3dLodStreaming.buildPriority(3, 4, 0),
+                "Each nearby frontier establishes its fallback before refining");
         check(Blaze3dLodStreaming.buildPriority(2, 4, 0)
                         < Blaze3dLodStreaming.buildPriority(2, 4, 2),
                 "Near refinement precedes distant refinement");

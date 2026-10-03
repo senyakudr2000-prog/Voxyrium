@@ -30,19 +30,23 @@ public class RenderGenerationService {
     private static final class BuildTask {
         WorldSection section;
         final long position;
+        final int spatialPriority;
         boolean hasDoneModelRequestInner;
         boolean hasDoneModelRequestOuter;
         int attempts;
         int addin;
         long priority = Long.MIN_VALUE;
-        private BuildTask(long position) {
+        private BuildTask(long position, int spatialPriority) {
             this.position = position;
+            this.spatialPriority = spatialPriority;
         }
         private void updatePriority() {
             int unique = COUNTER.incrementAndGet();
             int lvl = WorldEngine.MAX_LOD_LAYER-WorldEngine.getLevel(this.position);
             lvl = Math.min(lvl, 3);//Make the 2 highest quality have equal priority
-            this.priority = (((lvl*3L + Math.min(this.attempts, 3))*2 + this.addin) <<32) + Integer.toUnsignedLong(unique);
+            this.priority = this.spatialPriority < 0
+                    ? RenderTaskPriority.nativePriority(lvl, this.attempts, this.addin, unique)
+                    : RenderTaskPriority.spatialPriority(this.spatialPriority, this.attempts, this.addin, unique);
             this.addin = 0;
         }
     }
@@ -305,7 +309,10 @@ public class RenderGenerationService {
     }
 
 
-    public void enqueueTask(long pos) {
+    public void enqueueTask(long pos) { enqueueTask(pos, -1); }
+
+    /** Optional spatial order; existing native callers retain their level-based policy. */
+    public void enqueueTask(long pos, int spatialPriority) {
         if (!this.service.isLive()) {
             return;
         }
@@ -313,7 +320,7 @@ public class RenderGenerationService {
         long stamp = this.taskMapLock.writeLock();
         BuildTask task = this.taskMap.computeIfAbsent(pos, p->{
                 isOurs[0] = true;
-                return new BuildTask(p);
+                return new BuildTask(p, spatialPriority);
             });
         this.taskMapLock.unlockWrite(stamp);
 

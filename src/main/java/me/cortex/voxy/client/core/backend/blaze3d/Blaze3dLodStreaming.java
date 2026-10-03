@@ -12,8 +12,8 @@ final class Blaze3dLodStreaming {
     private Blaze3dLodStreaming() {}
 
     static int buildPriority(int level, int rootLevel, int ring) {
-        // Establish an omnidirectional safety net before refining individual rings.
-        return level == rootLevel ? 0 : ring + 1;
+        // Nearby coverage and its immediate children precede remote safety roots.
+        return ring * (rootLevel + 1) + rootLevel - level;
     }
 
     static int selectionRing(double distance, double width, int maxLevel) {
@@ -28,11 +28,10 @@ final class Blaze3dLodStreaming {
     }
 
     static boolean skipIntermediate(int level, int rootLevel, boolean selected,
-                                    boolean resident, boolean covered, double distance) {
-        // Keep roots as the cold-start safety net and L1 as the last coarse fallback.
-        // Virtual L2/L3 nodes still participate in child-coverage accounting.
-        return level >= 2 && level < rootLevel && !selected && !resident
-                && covered && distance <= 512.0;
+                                    boolean resident, boolean childrenReady) {
+        // A coarse ancestor alone is insufficient: skipping two levels makes its reveal wait
+        // on hundreds of fine meshes. Omit intermediate work only with existing fine coverage.
+        return level >= 2 && level < rootLevel && !selected && !resident && childrenReady;
     }
 
     static final class UploadBudget {
