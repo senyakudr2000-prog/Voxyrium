@@ -114,7 +114,19 @@ public final class VoxyBlaze3DProbeRenderer {
             .withUniform("VoxyLighting", UniformType.UNIFORM_BUFFER)
             .withUniform("VoxyModelFaces", UniformType.TEXEL_BUFFER, GpuFormat.RGBA32_UINT)
             .withUniform("VoxyModelInfo", UniformType.TEXEL_BUFFER, GpuFormat.RGBA32_UINT)
-            .withUniform("VoxyColours", UniformType.TEXEL_BUFFER, GpuFormat.R32_UINT).build();
+            .withUniform("VoxyColours", UniformType.TEXEL_BUFFER, GpuFormat.R32_UINT)
+            .withUniform("VoxyCoverage", UniformType.UNIFORM_BUFFER)
+            .withUniform("VoxyOcclusionOrigins", UniformType.TEXEL_BUFFER, GpuFormat.RGBA32_FLOAT)
+            .withSampler("VoxyVisibility")
+            .withSampler("VoxySodiumMask").build();
+    private static Blaze3dSodiumCoverage sodiumColumns = Blaze3dSodiumCoverage.empty();
+    private static final Blaze3dSodiumMask sodiumMask = new Blaze3dSodiumMask();
+    private static final Blaze3dSodiumVisibility sodiumVisibility = new Blaze3dSodiumVisibility();
+    private static int lastSodiumCulledMeshes;
+    private static final Blaze3dOcclusion gpuOcclusion = new Blaze3dOcclusion();
+    private static boolean lodOcclusionEnabled;
+    private static final Blaze3dGpuProfiler gpuProfiler = new Blaze3dGpuProfiler();
+    private static int lastOccluderMeshes;
     private static GpuBufferSlice lodLightingUniform;
     private static final int MARKER_VERTEX_COUNT = 36;
     private static final int MARKER_BUFFER_SIZE = MARKER_VERTEX_COUNT * DefaultVertexFormat.POSITION_TEX_COLOR.getVertexSize();
@@ -184,6 +196,17 @@ public final class VoxyBlaze3DProbeRenderer {
     private static final RenderPipeline LOD_TRANSLUCENT_COMPOSITE_PIPELINE = createCompositePipeline(
             "blaze3d_lod_translucent_composite", false, true);
     private static final RenderPipeline GLOBAL_FOG_PIPELINE = createGlobalFogPipeline();
+    private static final RenderPipeline LOD_DEPTH_SEED_PIPELINE = RenderPipeline.builder()
+            .withLocation(Identifier.fromNamespaceAndPath("voxy", "blaze3d_lod_depth_seed"))
+            .withBindGroupLayout(BindGroupLayouts.MATRICES_PROJECTION)
+            .withBindGroupLayout(BindGroupLayouts.SAMPLER0)
+            .withVertexShader(Identifier.fromNamespaceAndPath("voxy", "core/blaze3d_lod_composite"))
+            .withFragmentShader(Identifier.fromNamespaceAndPath("voxy", "core/blaze3d_lod_depth_seed"))
+            .withVertexBinding(0, DefaultVertexFormat.POSITION)
+            .withPrimitiveTopology(PrimitiveTopology.TRIANGLE_STRIP)
+            .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, true))
+            .withColorTargetState(new ColorTargetState(Optional.empty(), null, ColorTargetState.WRITE_NONE))
+            .withCull(false).build();
 
     private static RenderPipeline createTexturedMarkerPipeline() {
         return RenderPipeline.builder()
@@ -300,7 +323,6 @@ public final class VoxyBlaze3DProbeRenderer {
     // Sodium collects these on the render thread before its translucent pass.  The OpenGL path
     // rasterizes the same sections into a depth mask; Blaze3D currently consumes them while meshing.
     private static final Set<Long> visibleVanillaSections = new HashSet<>();
-    private static final Set<Long> collectedVisibleVanillaSections = new HashSet<>();
     private static long visibleVanillaMaskRevision;
     private static boolean failed;
     private static boolean initialized;
@@ -657,6 +679,8 @@ public final class VoxyBlaze3DProbeRenderer {
                 + ", bufferCreateMillis=" + formatMillis(lastFrameBufferCreateNanos)
                 + ", quadBytes=" + Blaze3dSectionMesh.QUAD_STRIDE
                 + ", sectionHeaderBytes=" + Blaze3dQuadEncoder.SECTION_BYTES
+                + ", sodiumCulledMeshes=" + lastSodiumCulledMeshes
+                + ", " + gpuOcclusion.summary() + " occluderMeshes=" + lastOccluderMeshes
                 + ", bypassedIntermediate=" + bypassedIntermediateKeys.size()
                 + ", coarseningFallbacks=" + coarseningCoverage.size()
                 + ", innerRingBlocks=" + Math.round(buildRingWidth)
@@ -711,11 +735,19 @@ public final class VoxyBlaze3DProbeRenderer {
     }
 
     public static void beginVisibleVanillaSectionCollection() {
-        collectedVisibleVanillaSections.clear();
+        beginVisibleVanillaSectionCollection(false);
+    }
+
+    public static void beginVisibleVanillaSectionCollection(boolean outOfGraph) {
+        sodiumVisibility.begin(outOfGraph);
     }
 
     public static void recordVisibleVanillaSection(int sectionX, int sectionY, int sectionZ) {
-        collectedVisibleVanillaSections.add(SectionPos.asLong(sectionX, sectionY, sectionZ));
+        sodiumVisibility.record(SectionPos.asLong(sectionX, sectionY, sectionZ));
+    }
+
+    public static void forgetVisibleVanillaChunk(int chunkX, int chunkZ) {
+        sodiumVisibility.forget(section -> SectionPos.x(section) == chunkX && SectionPos.z(section) == chunkZ);
     }
 
     /**
@@ -752,7 +784,11 @@ public final class VoxyBlaze3DProbeRenderer {
                     0, 0, 0, 0, 0, depthTarget.getWidth(0), depthTarget.getHeight(0));
             encoder.clearColorAndDepthTextures(lodColorTexture, new Vector4f(0.0f), lodDepthTexture, 0.0);
             uploadLodProjection(encoder, matrices.projection());
-            uploadLodLighting(encoder);
+            sodiumMask.update(encoder, sodiumColumns, vanillaTransitionChunks * 16.0f);
+            gpuProfiler.beginFrame(frameCount + 1, benchmark != null, detail -> benchmarkEvent("GPU", detail));
+            gpuProfiler.begin(encoder, Blaze3dGpuProfiler.Stage.SODIUM_DEPTH);
+            seedSodiumDepth(encoder, matrices);
+            gpuProfiler.end(encoder, Blaze3dGpuProfiler.Stage.SODIUM_DEPTH);
             if (testCubeVisible) {
                 uploadMarker(encoder, camera);
             }
@@ -764,7 +800,45 @@ public final class VoxyBlaze3DProbeRenderer {
             long drawStart = profileNow();
             long cullStart = profileNow();
             updateVisibleLodMeshes();
+            Matrix4f occlusionView = createLodProjection(matrices.projection()).mul(new Matrix4f(matrices.modelView())
+                    .translate((float) -camera.x, (float) -camera.y, (float) -camera.z));
+            boolean useOcclusion = !renderLodAboveTerrain && visibleLodMeshes.size() > 512;
+            gpuOcclusion.prepare(colorTarget.getWidth(0), colorTarget.getHeight(0), useOcclusion);
+            lodOcclusionEnabled = false;
+            lastOpaqueDrawCalls = 0;
+            lastOpaqueVertices = 0;
+            lastOccluderMeshes = 0;
+            if (useOcclusion) {
+                int opaqueOccluders = 0;
+                while (lastOccluderMeshes < visibleLodMeshes.size() && opaqueOccluders < 256) {
+                    if (visibleLodMeshes.get(lastOccluderMeshes++).opaqueQuadCount() != 0) opaqueOccluders++;
+                }
+            }
+            if (useOcclusion) {
+                for (LodSectionMesh mesh : visibleLodMeshes) {
+                    float scale = 1 << WorldEngine.getLevel(mesh.coordinate().key());
+                    float size = SECTION_EDGE * scale;
+                    gpuOcclusion.candidate(mesh.coordinate().x() * size, mesh.coordinate().y() * size,
+                            mesh.coordinate().z() * size, scale, mesh.aabb(), mesh.opaqueQuadCount(), mesh.waterQuadCount());
+                }
+            }
+            uploadLodLighting(encoder);
             benchmarkStage(Blaze3dBenchmark.Stage.CULL, cullStart);
+            if (useOcclusion) {
+                gpuProfiler.begin(encoder, Blaze3dGpuProfiler.Stage.OCCLUDERS);
+                try (RenderPass pass = encoder.createRenderPass(() -> "Voxy near terrain occluders",
+                        lodColorTextureView, Optional.empty(), lodDepthTextureView, OptionalDouble.empty())) {
+                    preparePass(pass, matrices, camera, fogParameters, true);
+                    drawOpaqueLods(pass, 0, lastOccluderMeshes);
+                }
+                gpuProfiler.end(encoder, Blaze3dGpuProfiler.Stage.OCCLUDERS);
+                gpuProfiler.begin(encoder, Blaze3dGpuProfiler.Stage.HIZ);
+                gpuOcclusion.capture(encoder, lodDepthTextureView, compositeVertexBuffer, occlusionView);
+                gpuProfiler.end(encoder, Blaze3dGpuProfiler.Stage.HIZ);
+                lodOcclusionEnabled = true;
+                uploadLodLighting(encoder);
+            }
+            gpuProfiler.begin(encoder, Blaze3dGpuProfiler.Stage.OPAQUE);
             try (RenderPass pass = encoder.createRenderPass(
                     () -> "Voxy Blaze3D offscreen opaque",
                     lodColorTextureView,
@@ -781,14 +855,17 @@ public final class VoxyBlaze3DProbeRenderer {
                 }
                 preparePass(pass, matrices, camera, fogParameters, true);
                 if (!renderLodAboveTerrain) {
-                    drawOpaqueLods(pass);
+                    drawOpaqueLods(pass, lastOccluderMeshes, visibleLodMeshes.size());
                 }
             }
+            gpuProfiler.end(encoder, Blaze3dGpuProfiler.Stage.OPAQUE);
             encoder.copyTextureToTexture(
                     lodDepthTexture, lodOpaqueDepthTexture,
                     0, 0, 0, 0, 0,
                     lodDepthTexture.getWidth(0), lodDepthTexture.getHeight(0));
+            gpuProfiler.begin(encoder, Blaze3dGpuProfiler.Stage.OPAQUE_COMPOSITE);
             compositeOffscreen(encoder, matrices, colorTarget, depthTarget, false);
+            gpuProfiler.end(encoder, Blaze3dGpuProfiler.Stage.OPAQUE_COMPOSITE);
             long drawNanos = profileElapsed(drawStart);
             benchmarkStage(Blaze3dBenchmark.Stage.DRAW, drawStart);
             benchmarkStage(Blaze3dBenchmark.Stage.OPAQUE, frameStart);
@@ -827,7 +904,10 @@ public final class VoxyBlaze3DProbeRenderer {
             CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
             ensureOffscreenTargets(colorTarget);
             uploadLodLighting(encoder);
-            encoder.clearColorAndDepthTextures(lodColorTexture, new Vector4f(0.0f), lodDepthTexture, 0.0);
+            gpuProfiler.begin(encoder, Blaze3dGpuProfiler.Stage.WATER);
+            encoder.clearColorTexture(lodColorTexture, new Vector4f(0.0f));
+            encoder.copyTextureToTexture(lodOpaqueDepthTexture, lodDepthTexture,
+                    0, 0, 0, 0, 0, lodDepthTexture.getWidth(0), lodDepthTexture.getHeight(0));
             try (RenderPass pass = encoder.createRenderPass(
                     () -> "Voxy Blaze3D offscreen translucent",
                     lodColorTextureView,
@@ -836,11 +916,16 @@ public final class VoxyBlaze3DProbeRenderer {
                     OptionalDouble.empty())) {
                 preparePass(pass, matrices, camera, fogParameters, true);
                 if (renderLodAboveTerrain) {
-                    drawOpaqueLods(pass);
+                    lastOpaqueDrawCalls = 0;
+                    lastOpaqueVertices = 0;
+                    drawOpaqueLods(pass, 0, visibleLodMeshes.size());
                 }
                 drawWaterLods(pass, camera);
             }
+            gpuProfiler.end(encoder, Blaze3dGpuProfiler.Stage.WATER);
+            gpuProfiler.begin(encoder, Blaze3dGpuProfiler.Stage.WATER_COMPOSITE);
             compositeOffscreen(encoder, matrices, colorTarget, depthTarget, true);
+            gpuProfiler.end(encoder, Blaze3dGpuProfiler.Stage.WATER_COMPOSITE);
             benchmarkStage(Blaze3dBenchmark.Stage.WATER, waterStart);
             if (benchmark != null) benchmark.waterDraws(lastWaterDrawCalls);
             logPerformanceSample("water", profileElapsed(waterStart), 0L, 0L, 0L, profileElapsed(waterStart));
@@ -888,6 +973,7 @@ public final class VoxyBlaze3DProbeRenderer {
             boolean zeroToOne = RenderSystem.getDevice().getDeviceInfo().isZZeroToOne();
 
             CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
+            gpuProfiler.begin(encoder, Blaze3dGpuProfiler.Stage.FOG);
             uploadGlobalFogProjection(encoder, minecraftReconstruction);
             try (RenderPass pass = encoder.createRenderPass(
                     () -> "Voxy Blaze3D global terrain fog",
@@ -909,6 +995,7 @@ public final class VoxyBlaze3DProbeRenderer {
                 pass.setVertexBuffer(0, compositeVertexBuffer.slice());
                 pass.draw(COMPOSITE_VERTEX_COUNT, 1, 0, 0);
             }
+            gpuProfiler.end(encoder, Blaze3dGpuProfiler.Stage.FOG);
         } catch (RuntimeException exception) {
             failed = true;
             benchmarkEvent("ERROR", "fog frame=" + frameCount + " exception=" + exception);
@@ -959,6 +1046,23 @@ public final class VoxyBlaze3DProbeRenderer {
             pass.bindTexture("Sampler1", lodDepthTextureView,
                     RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST));
             pass.bindTexture("Sampler2", sodiumCoverageDepthTextureView,
+                    RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST));
+            pass.setVertexBuffer(0, compositeVertexBuffer.slice());
+            pass.draw(COMPOSITE_VERTEX_COUNT, 1, 0, 0);
+        }
+    }
+
+    private static void seedSodiumDepth(CommandEncoder encoder, ChunkRenderMatrices matrices) {
+        if (renderLodAboveTerrain) return;
+        try (RenderPass pass = encoder.createRenderPass(() -> "Voxy Sodium depth prefill", lodColorTextureView,
+                Optional.empty(), lodDepthTextureView, OptionalDouble.empty())) {
+            RenderSystem.bindDefaultUniforms(pass);
+            pass.setPipeline(LOD_DEPTH_SEED_PIPELINE);
+            pass.setUniform("DynamicTransforms", RenderSystem.getDynamicUniforms().writeTransform(
+                    new Matrix4f(matrices.projection()).invert(), new Vector4f(1),
+                    new Vector3f(RenderSystem.getDevice().getDeviceInfo().isZZeroToOne() ? 1 : 0, 0, 0),
+                    createLodProjection(matrices.projection())));
+            pass.bindTexture("Sampler0", sodiumCoverageDepthTextureView,
                     RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST));
             pass.setVertexBuffer(0, compositeVertexBuffer.slice());
             pass.draw(COMPOSITE_VERTEX_COUNT, 1, 0, 0);
@@ -1186,6 +1290,7 @@ public final class VoxyBlaze3DProbeRenderer {
     private static void updateVisibleLodMeshes() {
         visibleLodMeshes.clear();
         visibleWaterMeshes.clear();
+        lastSodiumCulledMeshes = 0;
         // More available VRAM should enlarge the dormant cache without increasing every
         // frame's culling work. Visit active keys only and avoid allocating a union set.
         for (long key : selectedLodSectionKeys) addVisibleLodMesh(key);
@@ -1195,12 +1300,21 @@ public final class VoxyBlaze3DProbeRenderer {
         for (long key : coarseningCoverage.retainedKeys()) {
             if (!selectedLodSectionKeys.contains(key) && !transitionParentKeys.contains(key)) addVisibleLodMesh(key);
         }
+        // Near opaque surfaces populate depth first, allowing hardware early-Z to reject terrain behind them.
+        visibleLodMeshes.sort(Comparator.comparingDouble(mesh -> distanceSquaredToCamera(mesh.coordinate(),
+                currentDrawCameraX, currentDrawCameraY, currentDrawCameraZ)));
     }
 
     private static void addVisibleLodMesh(long key) {
         LodSectionMesh mesh = lodMeshes.get(key);
         if (mesh != null && isInsideCurrentDrawFrustum(mesh.coordinate())
                 && !isCoveredByCoarserMesh(mesh.coordinate())) {
+            int size = SECTION_EDGE << WorldEngine.getLevel(key);
+            double x = (double) mesh.coordinate().x() * size, z = (double) mesh.coordinate().z() * size;
+            if (sodiumColumns.covers(x, z, x + size, z + size, vanillaTransitionChunks > 0)) {
+                lastSodiumCulledMeshes++;
+                return;
+            }
             visibleLodMeshes.add(mesh);
             if (mesh.waterQuadCount() != 0) visibleWaterMeshes.add(mesh);
         }
@@ -1208,9 +1322,11 @@ public final class VoxyBlaze3DProbeRenderer {
 
     private static void uploadLodLighting(CommandEncoder encoder) {
         CardinalLighting lighting = Minecraft.getInstance().level.cardinalLighting();
-        ByteBuffer data = encoder.transientMemory().allocateCpu(16, Float.BYTES).order(ByteOrder.nativeOrder());
+        ByteBuffer data = encoder.transientMemory().allocateCpu(32, Float.BYTES).order(ByteOrder.nativeOrder());
         data.putFloat(quantizeShade(lighting.up())).putFloat(quantizeShade(lighting.down()))
-                .putFloat(quantizeShade(lighting.north())).putFloat(quantizeShade(lighting.east())).flip();
+                .putFloat(quantizeShade(lighting.north())).putFloat(quantizeShade(lighting.east()));
+        data.putFloat((float) currentDrawCameraX).putFloat((float) currentDrawCameraY)
+                .putFloat((float) currentDrawCameraZ).putFloat(lodOcclusionEnabled && !gpuOcclusion.hasIndirect() ? 1 : 0).flip();
         lodLightingUniform = encoder.transientMemory().uploadGpu(data,
                 RenderSystem.getDevice().getDeviceInfo().limits().minUniformOffsetAlignment(), GpuBuffer.USAGE_UNIFORM);
     }
@@ -1222,11 +1338,11 @@ public final class VoxyBlaze3DProbeRenderer {
     private static void bindLodTables(RenderPass pass) {
         blazeModelStore.bindModelTables(pass);
         pass.setUniform("VoxyLighting", lodLightingUniform);
+        sodiumMask.bind(pass);
+        gpuOcclusion.bind(pass);
     }
 
-    private static void drawOpaqueLods(RenderPass pass) {
-        lastOpaqueDrawCalls = 0;
-        lastOpaqueVertices = 0;
+    private static void drawOpaqueLods(RenderPass pass, int first, int end) {
         if (blazeModelStore == null) {
             return;
         }
@@ -1238,14 +1354,30 @@ public final class VoxyBlaze3DProbeRenderer {
                 RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR));
         pass.setIndexBuffer(lodIndexBuffer, IndexType.INT);
         pass.setVertexBuffer(0, lodCornerBuffer.slice());
-        for (LodSectionMesh mesh : visibleLodMeshes) {
+        for (int index = first; index < end; index++) {
+            LodSectionMesh mesh = visibleLodMeshes.get(index);
             if (mesh.opaqueQuadCount() != 0) {
                 pass.setUniform("VoxySection", mesh.sectionUniform());
                 pass.setVertexBuffer(1, mesh.opaqueInstances());
-                pass.drawIndexed(LOD_INDICES_PER_QUAD, mesh.opaqueQuadCount(), 0, 0, 0);
+                drawLodMesh(pass, mesh, false);
                 lastOpaqueDrawCalls++;
                 lastOpaqueVertices += mesh.opaqueQuadCount() * LOD_VERTICES_PER_QUAD;
             }
+        }
+    }
+
+    private static void drawLodMesh(RenderPass pass, LodSectionMesh mesh, boolean water) {
+        GpuBufferSlice command = null;
+        if (lodOcclusionEnabled) {
+            float scale = 1 << WorldEngine.getLevel(mesh.coordinate().key());
+            float size = SECTION_EDGE * scale;
+            command = gpuOcclusion.command(mesh.coordinate().x() * size, mesh.coordinate().y() * size,
+                    mesh.coordinate().z() * size, scale, water);
+        }
+        if (command != null) {
+            pass.drawIndexedIndirect(command, 1);
+        } else {
+            pass.drawIndexed(LOD_INDICES_PER_QUAD, water ? mesh.waterQuadCount() : mesh.opaqueQuadCount(), 0, 0, 0);
         }
     }
 
@@ -1272,7 +1404,7 @@ public final class VoxyBlaze3DProbeRenderer {
         for (LodSectionMesh mesh : visibleWaterMeshes) {
             pass.setUniform("VoxySection", mesh.sectionUniform());
             pass.setVertexBuffer(1, mesh.waterInstances());
-            pass.drawIndexed(LOD_INDICES_PER_QUAD, mesh.waterQuadCount(), 0, 0, 0);
+            drawLodMesh(pass, mesh, true);
             lastWaterDrawCalls++;
             lastWaterVertices += mesh.waterQuadCount() * LOD_VERTICES_PER_QUAD;
         }
@@ -1336,6 +1468,12 @@ public final class VoxyBlaze3DProbeRenderer {
         releaseBuffer(lodProjectionBuffer, "extended projection");
         lodProjectionBuffer = null;
         lodLightingUniform = null; // Frame transient memory owns the underlying allocation.
+        sodiumMask.close();
+        gpuOcclusion.close();
+        gpuProfiler.close();
+        lastOccluderMeshes = 0;
+        lodOcclusionEnabled = false;
+        sodiumColumns = Blaze3dSodiumCoverage.empty();
         releaseBuffer(globalFogProjectionBuffer, "global fog projection");
         globalFogProjectionBuffer = null;
         releaseOffscreenTargets();
@@ -1349,7 +1487,7 @@ public final class VoxyBlaze3DProbeRenderer {
         voxyBiomes.clear();
         tintColors.clear();
         visibleVanillaSections.clear();
-        collectedVisibleVanillaSections.clear();
+        sodiumVisibility.clear();
         visibleVanillaMaskRevision = 0;
         initialized = false;
         failed = false;
@@ -1483,14 +1621,12 @@ public final class VoxyBlaze3DProbeRenderer {
     }
 
     private static void commitVisibleVanillaSectionMask() {
-        if (visibleVanillaSections.equals(collectedVisibleVanillaSections)) {
-            return;
-        }
-        visibleVanillaSections.clear();
-        visibleVanillaSections.addAll(collectedVisibleVanillaSections);
+        if (!sodiumVisibility.commitInto(visibleVanillaSections)) return;
+        Set<Long> columns = new HashSet<>();
+        for (long section : visibleVanillaSections) columns.add(Blaze3dSodiumCoverage.key(SectionPos.x(section), SectionPos.z(section)));
+        sodiumColumns = Blaze3dSodiumCoverage.of(columns);
         visibleVanillaMaskRevision++;
-        // The mask can change while Sodium performs visibility culling. The next normal refresh
-        // incorporates it; forcing an immediate rebuild here causes one full 32^3 LoD mesh per frame.
+        // Draw-time coverage changes immediately without rebuilding otherwise reusable Voxy geometry.
     }
 
     private static void uploadMarker(CommandEncoder encoder, CameraTransform camera) {
@@ -2104,7 +2240,7 @@ public final class VoxyBlaze3DProbeRenderer {
         }
         // Both generations coexist until replaceLodMesh closes the previous buffers.
         peakLodGeometryBytes = Math.max(peakLodGeometryBytes, lodGeometryBytes + requestedGeometryBytes);
-        replaceLodMesh(coordinate, instances, mesh.opaqueQuadCount(), mesh.translucentQuadCount());
+        replaceLodMesh(coordinate, instances, mesh.opaqueQuadCount(), mesh.translucentQuadCount(), mesh.aabb());
         lodMeshUploads++;
         lodMeshFingerprints.put(key, fingerprint);
         coarseningCoverage.ready(key);
@@ -3968,9 +4104,9 @@ public final class VoxyBlaze3DProbeRenderer {
     }
 
     private static void replaceLodMesh(LodSectionCoordinate coordinate, GpuBuffer instances,
-                                       int opaqueQuadCount, int waterQuadCount) {
+                                       int opaqueQuadCount, int waterQuadCount, int aabb) {
         removeLodMesh(coordinate.key());
-        LodSectionMesh mesh = new LodSectionMesh(coordinate, instances, opaqueQuadCount, waterQuadCount);
+        LodSectionMesh mesh = new LodSectionMesh(coordinate, instances, opaqueQuadCount, waterQuadCount, aabb);
         lodMeshes.put(coordinate.key(), mesh);
         lodMeshLastUsedFrames.put(coordinate.key(), frameCount);
         lodGeometryBytes += geometryBytes(mesh);
@@ -4789,12 +4925,12 @@ public final class VoxyBlaze3DProbeRenderer {
     }
 
     private record LodSectionMesh(LodSectionCoordinate coordinate, GpuBuffer instanceBuffer,
-                                  int opaqueQuadCount, int waterQuadCount,
+                                  int opaqueQuadCount, int waterQuadCount, int aabb,
                                   GpuBufferSlice sectionUniform, @Nullable GpuBufferSlice opaqueInstances,
                                   @Nullable GpuBufferSlice waterInstances) {
         private LodSectionMesh(LodSectionCoordinate coordinate, GpuBuffer buffer,
-                               int opaqueQuads, int waterQuads) {
-            this(coordinate, buffer, opaqueQuads, waterQuads, buffer.slice(0, Blaze3dQuadEncoder.SECTION_BYTES),
+                               int opaqueQuads, int waterQuads, int aabb) {
+            this(coordinate, buffer, opaqueQuads, waterQuads, aabb, buffer.slice(0, Blaze3dQuadEncoder.SECTION_BYTES),
                     opaqueQuads == 0 ? null : buffer.slice(Blaze3dQuadEncoder.SECTION_BYTES + (long) waterQuads * Blaze3dSectionMesh.QUAD_STRIDE,
                             (long) opaqueQuads * Blaze3dSectionMesh.QUAD_STRIDE),
                     waterQuads == 0 ? null : buffer.slice(Blaze3dQuadEncoder.SECTION_BYTES, (long) waterQuads * Blaze3dSectionMesh.QUAD_STRIDE));

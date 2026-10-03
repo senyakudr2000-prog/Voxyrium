@@ -39,7 +39,8 @@ public class MixinVisibleChunkCollector {
                     vrs.visbleSectionStream.put(SectionPos.asLong(x,y,z));
                 }
             }
-            if (VoxyConfig.CONFIG.isBlaze3dRenderingEnabled()) {
+            if (VoxyConfig.CONFIG.isBlaze3dRenderingEnabled()
+                    && (region.getSectionFlags(LocalSectionIndex.pack(x, y, z)) & RenderSectionFlags.MASK_HAS_BLOCK_GEOMETRY) != 0) {
                 VoxyBlaze3DProbeRenderer.recordVisibleVanillaSection(x, y, z);
             }
         }

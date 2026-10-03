@@ -23,6 +23,7 @@ public final class Blaze3dLodStreamingTest {
         Blaze3dModelEncoderTest.run();
         Blaze3dBenchmarkTest.run();
         Blaze3dFingerprintCacheTest.run();
+        Blaze3dVisibilityTest.run();
         me.cortex.voxy.client.core.rendering.building.RenderTaskPriorityTest.run();
         me.cortex.voxy.common.world.RenderRevisionTest.run();
     }

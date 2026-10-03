@@ -22,6 +22,9 @@ in vec2 texCoord;
 out vec4 fragColor;
 
 void main() {
+    // The depth target is prefilled from Sodium, but only Voxy colour belongs in this composite.
+    vec4 lodColor = texture(Sampler0, texCoord);
+    if (lodColor.a <= 0.0) discard;
     float lodDepth = texture(Sampler1, texCoord).r;
     if (lodDepth <= 0.0) {
         discard;
@@ -74,5 +77,5 @@ void main() {
     // win deterministically instead of alternating because of reconstruction/rounding noise.
     float sodiumBiasedDepth = max(0.0, minecraftDepth - 4.0 / 16777215.0);
     gl_FragDepth = minecraftDepth > 0.0 ? max(sodiumBiasedDepth, distantDepth) : distantDepth;
-    fragColor = texture(Sampler0, texCoord) * ColorModulator.w;
+    fragColor = lodColor * ColorModulator.w;
 }

@@ -17,7 +17,7 @@ public final class Blaze3dMemoryBudget {
     private static final long MIN_STAGING_BUDGET = 128L * MIB;
     private static final long MAX_STAGING_BUDGET = 768L * MIB;
     // Full 65,536-model RGBA atlas including the four allocated mip levels, plus render targets,
-    // the shared index buffer, 2.25 MiB of model/colour tables and small fixed GPU resources.
+    // the shared index buffer, model/colour tables and the small current-frame HiZ/indirect tables.
     private static final long FIXED_VRAM_BYTES = 576L * MIB;
     // Captured Minecraft atlas, baked-model upload results and CPU metadata during population.
     private static final long FIXED_RAM_BYTES = 256L * MIB;

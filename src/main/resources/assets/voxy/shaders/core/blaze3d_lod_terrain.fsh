@@ -1,4 +1,5 @@
 #version 330
+#moj_import <voxy:blaze3d_sodium_coverage.glsl>
 
 layout(std140) uniform DynamicTransforms {
     mat4 ModelViewMat;
@@ -24,6 +25,7 @@ flat in vec4 vertexLighting;
 flat in int modelId;
 flat in int quadFlags;
 in float sphericalDistance;
+in vec2 worldXZ;
 
 out vec4 fragColor;
 
@@ -38,6 +40,7 @@ float linearFogValue(float fogDistance, float start, float end) {
 }
 
 void main() {
+    if (sodiumDiscards(worldXZ, gl_FragCoord.xy)) discard;
     int face = (quadFlags >> 8) & 7;
     vec2 modelBase = vec2(modelId & 0xFF, (modelId >> 8) & 0xFF) / 256.0;
     vec2 faceBase = vec2(face >> 1, face & 1) / (vec2(3.0, 2.0) * 256.0);

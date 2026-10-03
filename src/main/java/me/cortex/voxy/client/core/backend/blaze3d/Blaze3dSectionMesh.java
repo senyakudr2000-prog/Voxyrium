@@ -17,19 +17,21 @@ final class Blaze3dSectionMesh implements AutoCloseable {
     private final int opaqueQuadCount;
     private final int translucentQuadCount;
     private final long requiredTextureVersion;
+    private final int aabb;
 
     private Blaze3dSectionMesh(long position, @Nullable ByteBuffer instances,
-                              int opaqueQuadCount, int translucentQuadCount, long requiredTextureVersion) {
+                              int opaqueQuadCount, int translucentQuadCount, long requiredTextureVersion, int aabb) {
         this.position = position;
         this.instances = instances;
         this.opaqueQuadCount = opaqueQuadCount;
         this.translucentQuadCount = translucentQuadCount;
         this.requiredTextureVersion = requiredTextureVersion;
+        this.aabb = aabb;
     }
 
     static Blaze3dSectionMesh pack(BuiltSection section, Blaze3dModelStore models) {
         if (section.isEmpty() || section.geometryBuffer.size == 0) {
-            return new Blaze3dSectionMesh(section.position, null, 0, 0, 0L);
+            return new Blaze3dSectionMesh(section.position, null, 0, 0, 0L, -1);
         }
 
         int totalQuads = (int) (section.geometryBuffer.size / Long.BYTES);
@@ -67,7 +69,7 @@ final class Blaze3dSectionMesh implements AutoCloseable {
             requiredTextureVersion = Math.max(requiredTextureVersion, models.biomeVersion());
             instances.flip();
             return new Blaze3dSectionMesh(section.position, instances, opaqueQuads, translucentQuads,
-                    requiredTextureVersion);
+                    requiredTextureVersion, section.aabb);
         } catch (RuntimeException | OutOfMemoryError exception) {
             free(instances);
             throw exception;
@@ -104,6 +106,8 @@ final class Blaze3dSectionMesh implements AutoCloseable {
     long requiredTextureVersion() {
         return this.requiredTextureVersion;
     }
+
+    int aabb() { return this.aabb; }
 
     long geometryBytes() {
         return Blaze3dQuadEncoder.bytes(this.opaqueQuadCount + this.translucentQuadCount);

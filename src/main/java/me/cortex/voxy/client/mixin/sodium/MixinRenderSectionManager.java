@@ -49,7 +49,9 @@ public class MixinRenderSectionManager {
             if (vrs.visbleSectionStream != null) vrs.visbleSectionStream.reset();
         }
         if (!IrisUtil.irisShadowActive() && VoxyConfig.CONFIG.isBlaze3dRenderingEnabled()) {
-            VoxyBlaze3DProbeRenderer.beginVisibleVanillaSectionCollection();
+            // The main render list can be reused for several frames. Keep it and refresh only
+            // the extra out-of-graph list, rather than replacing all Sodium coverage with it.
+            VoxyBlaze3DProbeRenderer.beginVisibleVanillaSectionCollection(true);
         }
     }
 
@@ -66,6 +68,9 @@ public class MixinRenderSectionManager {
 
     @Inject(method = "onChunkRemoved", at = @At("HEAD"))
     private void voxy$injectIngest(int x, int z, CallbackInfo ci) {
+        if (VoxyConfig.CONFIG.isBlaze3dRenderingEnabled()) {
+            VoxyBlaze3DProbeRenderer.forgetVisibleVanillaChunk(x, z);
+        }
         //TODO: Am not quite sure if this is right
         if (VoxyConfig.CONFIG.ingestEnabled && !BOBBY_INSTALLED) {
             var cccm = (ICheekyClientChunkCache)this.level.getChunkSource();

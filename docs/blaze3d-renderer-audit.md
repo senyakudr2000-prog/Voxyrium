@@ -166,3 +166,13 @@ Remaining structural work includes synchronous hierarchy selection and storage e
 The subsequent compact-format change addresses the 32-byte payload described in the baseline audit. Blaze3D now retains the original eight-byte Cortex quad and adds one 16-byte origin/scale header per nonempty section, in the same GPU allocation. Model face records, material flags and biome tints move to three public Blaze3D texel buffers totaling 2.25 MiB. CPU packing uses a bulk native copy after model dependency checks, avoiding per-quad metadata expansion. Ordered bakery snapshots publish metadata, palette updates and atlas uploads together before mesh admission; palette relocations update resident geometry through the shared tables. Biome repacks coalesce model-info writes and do not resend unchanged face records.
 
 Geometry cache and upload byte totals include section headers. The benchmark header reports eight bytes per quad and 16 bytes per section, and model state adds fixed table capacity and cumulative uploaded table bytes. Geometry budgets are preserved. Shader table reads and a section-uniform bind add GPU/CPU submission work, so reduced byte volume must not be read as a measured frame-rate improvement. Per-section GPU allocation and draw submission, hierarchy work and Sodium coverage remain separate optimization candidates. See [the current format and validation notes](blaze3d-quad-instancing.md).
+
+
+## Implemented GPU visibility pass
+
+The next pass fixes the uninitialized Iris configuration during renderer switching, preserves
+Sodium's independently reused main render list, suppresses covered Voxy columns, pre-fills
+Sodium depth, and generates conservative current-frame occlusion and indirect commands
+through the public Blaze3D API. It also adds sampled GPU timestamps to the automatic live
+log. Per-section CPU bindings/submission and CPU hierarchy selection still remain separate
+from GPU visibility. See [implementation, costs and validation](blaze3d-gpu-culling.md).

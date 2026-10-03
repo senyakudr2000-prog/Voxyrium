@@ -48,10 +48,11 @@ keeps each buffer within 65536 texels instead of requiring a 131072-texel buffer
 
 The vertex shader reads model info, reads the first table when the face is 0–3,
 and reads the palette only for biome-dependent tint. These reads reuse shared
-metadata across quads. Directional shades use a 16-byte per-pass uniform uploaded
+metadata across quads. Directional shades and the camera/visibility controls use a 32-byte per-pass uniform uploaded
 through Blaze3D's reusable transient memory, preserving the previous eight-bit
-shade quantization. Section uniforms add a bind per section; draw counts remain
-unchanged. Extra vertex-stage table reads may affect stationary performance and
+shade quantization. Section uniforms add a bind per section. CPU submission remains per section;
+GPU-generated indirect commands can now zero hidden sections before vertex processing.
+See [the GPU culling pass](blaze3d-gpu-culling.md). Extra vertex-stage table reads may affect stationary performance and
 must be measured on the target GPU.
 
 ## CPU work and publication

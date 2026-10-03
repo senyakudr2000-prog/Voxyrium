@@ -73,8 +73,12 @@ public class IrisUtil {
     }
 
     private static void reload0() {
+        // Iris can be installed without initializing its config on Minecraft's Vulkan path.
+        // Its public config wrapper still exists in that state but dereferences a null config.
+        var config = Iris.getIrisConfig();
+        if (config == null) return;
         try {
-            if (IrisApi.getInstance().isShaderPackInUse()||IrisApi.getInstance().getConfig().areShadersEnabled()) {//Only reload if there is a shaderpack
+            if (IrisApi.getInstance().isShaderPackInUse() || config.areShadersEnabled()) {
                 Iris.reload();
             }
         } catch (IOException e) {

@@ -483,6 +483,8 @@ sourceSets {
                     '**/Blaze3dModelEncoder.java', '**/Blaze3dModelEncoderTest.java',
                     '**/Blaze3dBenchmark.java', '**/Blaze3dBenchmarkTest.java',
                     '**/Blaze3dFingerprintCache.java', '**/Blaze3dFingerprintCacheTest.java',
+                    '**/Blaze3dSodiumCoverage.java', '**/Blaze3dSodiumVisibility.java',
+                    '**/Blaze3dOcclusionHash.java', '**/Blaze3dVisibilityTest.java',
                     '**/RenderTaskPriority.java', '**/RenderTaskPriorityTest.java',
                     '**/RenderRevision.java', '**/RenderRevisionTest.java'
         }

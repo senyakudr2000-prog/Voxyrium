@@ -1,4 +1,5 @@
 #version 330
+#moj_import <voxy:blaze3d_sodium_coverage.glsl>
 
 layout(std140) uniform DynamicTransforms {
     mat4 ModelViewMat;
@@ -18,10 +19,13 @@ layout(std140) uniform VoxySection {
 };
 layout(std140) uniform VoxyLighting {
     vec4 DirectionalShades; // up, down, north/south, east/west
+    vec4 CameraWorld;
 };
 uniform usamplerBuffer VoxyModelFaces;
 uniform usamplerBuffer VoxyModelInfo;
 uniform usamplerBuffer VoxyColours;
+uniform samplerBuffer VoxyOcclusionOrigins;
+uniform sampler2D VoxyVisibility;
 
 uniform sampler2D Sampler2;
 
@@ -31,6 +35,7 @@ flat out vec4 vertexLighting;
 flat out int modelId;
 flat out int quadFlags;
 out float sphericalDistance;
+out vec2 worldXZ;
 
 float fluidHeightOffset(int face, int axis, ivec2 corner, uint heights) {
     int index = -1;
@@ -41,12 +46,36 @@ float fluidHeightOffset(int face, int axis, ivec2 corner, uint heights) {
 }
 
 void main() {
+    if (CameraWorld.w > 0.5) {
+        uint h = floatBitsToUint(SectionOriginScale.x);
+        h = (((h << 13u) | (h >> 19u)) ^ floatBitsToUint(SectionOriginScale.y)) * 0x9E3779B9u;
+        h = (((h << 17u) | (h >> 15u)) ^ floatBitsToUint(SectionOriginScale.z)) * 0x85EBCA6Bu;
+        h = (((h << 15u) | (h >> 17u)) ^ floatBitsToUint(SectionOriginScale.w)) * 0xC2B2AE35u;
+        h = (h ^ (h >> 16u)) * 0x7FEB352Du;
+        h = (h ^ (h >> 15u)) * 0x846CA68Bu;
+        uint index = (h ^ (h >> 16u)) & 65535u;
+        if (all(equal(texelFetch(VoxyOcclusionOrigins, int(index)), SectionOriginScale))
+                && texelFetch(VoxyVisibility, ivec2(int(index & 255u), int(index >> 8u)), 0).r < 0.5) {
+            gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+            return;
+        }
+    }
     int face = int(QuadData.x & 7u);
     int axis = face >> 1;
     modelId = int((QuadData.x >> 26u) | ((QuadData.y & 1023u) << 6u));
     uvec4 info = texelFetch(VoxyModelInfo, modelId);
-    uint FaceData = face < 4 ? texelFetch(VoxyModelFaces, modelId)[face] : info[face - 4];
     uint Material = info.z;
+    // Match Native's directional section rejection, preserving all double-sided and translucent models.
+    if ((Material & 36u) == 0u) {
+        int coordinate = axis == 0 ? 1 : axis == 1 ? 2 : 0;
+        float relative = CameraWorld[coordinate] - SectionOriginScale[coordinate];
+        if (((face & 1) == 0 && relative > 32.002 * SectionOriginScale.w)
+                || ((face & 1) != 0 && relative < -0.002 * SectionOriginScale.w)) {
+            gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+            return;
+        }
+    }
+    uint FaceData = face < 4 ? texelFetch(VoxyModelFaces, modelId)[face] : info[face - 4];
     bool fluid = (Material & 16u) != 0u;
     float scale = SectionOriginScale.w;
     vec2 textureMin = vec2(FaceData & 15u, (FaceData >> 8u) & 15u) / 16.0 - 0.00005;
@@ -62,6 +91,11 @@ void main() {
 
     vec3 position = SectionOriginScale.xyz + vec3((QuadData.x >> 21u) & 31u,
             (QuadData.x >> 16u) & 31u, (QuadData.x >> 11u) & 31u) * scale;
+    vec2 footprint = axis == 0 ? size : axis == 1 ? vec2(size.x, 1.0) : vec2(1.0, size.y);
+    if (sodiumInteriorQuad(position.xz, position.xz + footprint * scale)) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        return;
+    }
     vec2 offset = geometrySize * Corner * scale;
     if (axis == 0) {
         position += vec3(geometryMin.x, depth, geometryMin.y) * scale;
@@ -103,4 +137,5 @@ void main() {
     tintColor = vec4(vec3((tint >> 16u) & 255u, (tint >> 8u) & 255u, tint & 255u) / 255.0, 1.0);
     vertexLighting = texture(Sampler2, lightUv) * vec4(vec3(directionalShade), 1.0);
     sphericalDistance = length(viewPosition.xyz);
+    worldXZ = position.xz;
 }
