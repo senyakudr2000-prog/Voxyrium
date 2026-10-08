@@ -7,6 +7,7 @@ import me.cortex.voxy.common.config.storage.StorageBackend;
 import me.cortex.voxy.common.config.storage.StorageConfig;
 import me.cortex.voxy.common.util.MemoryBuffer;
 import me.cortex.voxy.common.util.UnsafeUtil;
+import me.cortex.voxy.common.world.WorldEngine;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.util.lmdb.MDBVal;
 
@@ -85,9 +86,25 @@ public class LMDBStorageBackend extends StorageBackend {
         }
     }
 
-    @Override
+@Override
     public void iteratePositions(int level, LongConsumer consumer) {
-        throw new IllegalStateException("Not yet implemented");
+        this.synchronizedTransaction(() -> this.sectionDatabase.transaction(MDB_RDONLY, transaction -> {
+            try (var cursor = transaction.createCursor()) {
+                var keyPtr = MDBVal.malloc(transaction.stack);
+                var valPtr = MDBVal.malloc(transaction.stack);
+                while (cursor.get(MDB_NEXT, keyPtr, valPtr) != MDB_NOTFOUND) {
+                    var keyData = keyPtr.mv_data();
+                    if (keyData == null || keyPtr.mv_size() != 8) {
+                        continue;
+                    }
+                    long key = MemoryUtil.memGetLong(MemoryUtil.memAddress(keyData));
+                    if (level == -1 || WorldEngine.getLevel(key) == level) {
+                        consumer.accept(key);
+                    }
+                }
+            }
+            return null;
+        }));
     }
 
     //TODO: make batch get and updates
