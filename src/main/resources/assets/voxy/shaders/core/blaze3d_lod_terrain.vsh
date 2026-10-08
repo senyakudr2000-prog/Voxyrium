@@ -133,7 +133,8 @@ void main() {
     uint tint = info.w;
     if ((Material & 2u) != 0u) {
         uint index = tint + ((QuadData.y >> 14u) & 511u);
-        tint = index < uint(textureSize(VoxyColours)) ? texelFetch(VoxyColours, int(index)).r : 0xFFFFFFFFu;
+        uint colour = texelFetch(VoxyColours, int(index)).r;
+        tint = colour == 0u ? 0xFFFFFFFFu : colour;
     }
     tintColor = vec4(vec3((tint >> 16u) & 255u, (tint >> 8u) & 255u, tint & 255u) / 255.0, 1.0);
     vertexLighting = texture(Sampler2, lightUv) * vec4(vec3(directionalShade), 1.0);
